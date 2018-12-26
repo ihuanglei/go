@@ -150,7 +150,7 @@ const (
 )
 
 // LINUX for zSeries ELF Application Binary Interface Supplement
-// http://refspecs.linuxfoundation.org/ELF/zSeries/lzsabi0_zSeries/x1472.html
+// https://refspecs.linuxfoundation.org/ELF/zSeries/lzsabi0_zSeries/x1472.html
 var S390XDWARFRegisters = map[int16]int16{}
 
 func init() {
@@ -271,6 +271,9 @@ const (
 	// find leftmost one
 	AFLOGR
 
+	// population count
+	APOPCNT
+
 	// integer bitwise
 	AAND
 	AANDW
@@ -318,6 +321,10 @@ const (
 	AFIEBR
 	AFIDBR
 	ACPSDR
+	ALTEBR
+	ALTDBR
+	ATCEB
+	ATCDB
 
 	// move from GPR to FPR and vice versa
 	ALDGR
@@ -937,6 +944,10 @@ const (
 	AVUPLB
 	AVUPLHW
 	AVUPLF
+	AVMSLG
+	AVMSLEG
+	AVMSLOG
+	AVMSLEOG
 
 	// binary
 	ABYTE

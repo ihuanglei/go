@@ -28,6 +28,9 @@ func perpetuumMobile() {
 }
 
 func TestStopTheWorldDeadlock(t *testing.T) {
+	if runtime.GOARCH == "wasm" {
+		t.Skip("no preemption on wasm yet")
+	}
 	if testing.Short() {
 		t.Skip("skipping during short test")
 	}
@@ -230,6 +233,10 @@ func TestBlockLocked(t *testing.T) {
 }
 
 func TestTimerFairness(t *testing.T) {
+	if runtime.GOARCH == "wasm" {
+		t.Skip("no preemption on wasm yet")
+	}
+
 	done := make(chan bool)
 	c := make(chan bool)
 	for i := 0; i < 2; i++ {
@@ -256,6 +263,10 @@ func TestTimerFairness(t *testing.T) {
 }
 
 func TestTimerFairness2(t *testing.T) {
+	if runtime.GOARCH == "wasm" {
+		t.Skip("no preemption on wasm yet")
+	}
+
 	done := make(chan bool)
 	c := make(chan bool)
 	for i := 0; i < 2; i++ {
@@ -290,6 +301,10 @@ var preempt = func() int {
 }
 
 func TestPreemption(t *testing.T) {
+	if runtime.GOARCH == "wasm" {
+		t.Skip("no preemption on wasm yet")
+	}
+
 	// Test that goroutines are preempted at function calls.
 	N := 5
 	if testing.Short() {
@@ -313,6 +328,10 @@ func TestPreemption(t *testing.T) {
 }
 
 func TestPreemptionGC(t *testing.T) {
+	if runtime.GOARCH == "wasm" {
+		t.Skip("no preemption on wasm yet")
+	}
+
 	// Test that pending GC preempts running goroutines.
 	P := 5
 	N := 10
@@ -385,6 +404,9 @@ func TestNumGoroutine(t *testing.T) {
 }
 
 func TestPingPongHog(t *testing.T) {
+	if runtime.GOARCH == "wasm" {
+		t.Skip("no preemption on wasm yet")
+	}
 	if testing.Short() {
 		t.Skip("skipping in -short mode")
 	}
@@ -834,6 +856,10 @@ func TestStealOrder(t *testing.T) {
 }
 
 func TestLockOSThreadNesting(t *testing.T) {
+	if runtime.GOARCH == "wasm" {
+		t.Skip("no threads on wasm yet")
+	}
+
 	go func() {
 		e, i := runtime.LockOSCounts()
 		if e != 0 || i != 0 {
@@ -865,11 +891,22 @@ func testLockOSThreadExit(t *testing.T, prog string) {
 	output := runTestProg(t, prog, "LockOSThreadMain", "GOMAXPROCS=1")
 	want := "OK\n"
 	if output != want {
-		t.Errorf("want %s, got %s\n", want, output)
+		t.Errorf("want %q, got %q", want, output)
 	}
 
 	output = runTestProg(t, prog, "LockOSThreadAlt")
 	if output != want {
-		t.Errorf("want %s, got %s\n", want, output)
+		t.Errorf("want %q, got %q", want, output)
+	}
+}
+
+func TestLockOSThreadAvoidsStatePropagation(t *testing.T) {
+	want := "OK\n"
+	skip := "unshare not permitted\n"
+	output := runTestProg(t, "testprog", "LockOSThreadAvoidsStatePropagation", "GOMAXPROCS=1")
+	if output == skip {
+		t.Skip("unshare syscall not permitted on this system")
+	} else if output != want {
+		t.Errorf("want %q, got %q", want, output)
 	}
 }

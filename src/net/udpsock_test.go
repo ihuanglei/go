@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+// +build !js
+
 package net
 
 import (
@@ -351,19 +353,18 @@ func TestUDPZeroBytePayload(t *testing.T) {
 		if n != 0 {
 			t.Errorf("got %d; want 0", n)
 		}
-		c.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+		c.SetReadDeadline(time.Now().Add(30 * time.Second))
 		var b [1]byte
+		var name string
 		if genericRead {
 			_, err = c.(Conn).Read(b[:])
+			name = "Read"
 		} else {
 			_, _, err = c.ReadFrom(b[:])
+			name = "ReadFrom"
 		}
-		switch err {
-		case nil: // ReadFrom succeeds
-		default: // Read may timeout, it depends on the platform
-			if nerr, ok := err.(Error); !ok || !nerr.Timeout() {
-				t.Fatal(err)
-			}
+		if err != nil {
+			t.Errorf("%s of zero byte packet failed: %v", name, err)
 		}
 	}
 }

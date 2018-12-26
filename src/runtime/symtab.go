@@ -343,9 +343,12 @@ func (f *Func) funcInfo() funcInfo {
 const (
 	_PCDATA_StackMapIndex       = 0
 	_PCDATA_InlTreeIndex        = 1
+	_PCDATA_RegMapIndex         = 2
 	_FUNCDATA_ArgsPointerMaps   = 0
 	_FUNCDATA_LocalsPointerMaps = 1
 	_FUNCDATA_InlTree           = 2
+	_FUNCDATA_RegPointerMaps    = 3
+	_FUNCDATA_StackObjects      = 4
 	_ArgsSizeUnknown            = -0x80000000
 )
 
@@ -354,10 +357,11 @@ const (
 // Note that in some situations involving plugins, there may be multiple
 // copies of a particular special runtime function.
 // Note: this list must match the list in cmd/internal/objabi/funcid.go.
-type funcID uint32
+type funcID uint8
 
 const (
 	funcID_normal funcID = iota // not a special function
+	funcID_runtime_main
 	funcID_goexit
 	funcID_jmpdefer
 	funcID_mcall
@@ -367,15 +371,13 @@ const (
 	funcID_asmcgocall
 	funcID_sigpanic
 	funcID_runfinq
-	funcID_bgsweep
-	funcID_forcegchelper
-	funcID_timerproc
 	funcID_gcBgMarkWorker
 	funcID_systemstack_switch
 	funcID_systemstack
 	funcID_cgocallback_gofunc
 	funcID_gogo
 	funcID_externalthreadhandler
+	funcID_debugCallV1
 )
 
 // moduledata records information about the layout of the executable
@@ -696,7 +698,7 @@ func findfunc(pc uintptr) funcInfo {
 }
 
 type pcvalueCache struct {
-	entries [16]pcvalueCacheEnt
+	entries [2][8]pcvalueCacheEnt
 }
 
 type pcvalueCacheEnt struct {
@@ -705,6 +707,14 @@ type pcvalueCacheEnt struct {
 	off      int32
 	// val is the value of this cached pcvalue entry.
 	val int32
+}
+
+// pcvalueCacheKey returns the outermost index in a pcvalueCache to use for targetpc.
+// It must be very cheap to calculate.
+// For now, align to sys.PtrSize and reduce mod the number of entries.
+// In practice, this appears to be fairly randomly and evenly distributed.
+func pcvalueCacheKey(targetpc uintptr) uintptr {
+	return (targetpc / sys.PtrSize) % uintptr(len(pcvalueCache{}.entries))
 }
 
 func pcvalue(f funcInfo, off int32, targetpc uintptr, cache *pcvalueCache, strict bool) int32 {
@@ -719,13 +729,14 @@ func pcvalue(f funcInfo, off int32, targetpc uintptr, cache *pcvalueCache, stric
 	// cheaper than doing the hashing for a less associative
 	// cache.
 	if cache != nil {
-		for i := range cache.entries {
+		x := pcvalueCacheKey(targetpc)
+		for i := range cache.entries[x] {
 			// We check off first because we're more
 			// likely to have multiple entries with
 			// different offsets for the same targetpc
 			// than the other way around, so we'll usually
 			// fail in the first clause.
-			ent := &cache.entries[i]
+			ent := &cache.entries[x][i]
 			if ent.off == off && ent.targetpc == targetpc {
 				return ent.val
 			}
@@ -754,9 +765,14 @@ func pcvalue(f funcInfo, off int32, targetpc uintptr, cache *pcvalueCache, stric
 			// replacement prevents a performance cliff if
 			// a recursive stack's cycle is slightly
 			// larger than the cache.
+			// Put the new element at the beginning,
+			// since it is the most likely to be newly used.
 			if cache != nil {
-				ci := fastrandn(uint32(len(cache.entries)))
-				cache.entries[ci] = pcvalueCacheEnt{
+				x := pcvalueCacheKey(targetpc)
+				e := &cache.entries[x]
+				ci := fastrand() % uint32(len(cache.entries[x]))
+				e[ci] = e[0]
+				e[0] = pcvalueCacheEnt{
 					targetpc: targetpc,
 					off:      off,
 					val:      val,
@@ -854,7 +870,7 @@ func pcdatavalue(f funcInfo, table int32, targetpc uintptr, cache *pcvalueCache)
 	return pcvalue(f, off, targetpc, cache, true)
 }
 
-func funcdata(f funcInfo, i int32) unsafe.Pointer {
+func funcdata(f funcInfo, i uint8) unsafe.Pointer {
 	if i < 0 || i >= f.nfuncdata {
 		return nil
 	}
@@ -916,10 +932,13 @@ type stackmap struct {
 
 //go:nowritebarrier
 func stackmapdata(stkmap *stackmap, n int32) bitvector {
-	if n < 0 || n >= stkmap.n {
+	// Check this invariant only when stackDebug is on at all.
+	// The invariant is already checked by many of stackmapdata's callers,
+	// and disabling it by default allows stackmapdata to be inlined.
+	if stackDebug > 0 && (n < 0 || n >= stkmap.n) {
 		throw("stackmapdata: index out of range")
 	}
-	return bitvector{stkmap.nbit, (*byte)(add(unsafe.Pointer(&stkmap.bytedata), uintptr(n*((stkmap.nbit+7)>>3))))}
+	return bitvector{stkmap.nbit, addb(&stkmap.bytedata[0], uintptr(n*((stkmap.nbit+7)>>3)))}
 }
 
 // inlinedCall is the encoding of entries in the FUNCDATA_InlTree table.

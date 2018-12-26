@@ -34,6 +34,12 @@ func sys_umtx_op(addr *uint32, mode int32, val uint32, uaddr1 uintptr, ut *umtx_
 
 func osyield()
 
+func kqueue() int32
+
+//go:noescape
+func kevent(kq int32, ch *keventt, nch int32, ev *keventt, nev int32, ts *timespec) int32
+func closeonexec(fd int32)
+
 // From FreeBSD's <sys/sysctl.h>
 const (
 	_CTL_HW      = 6
@@ -177,7 +183,8 @@ func thr_start()
 
 // May run with m.p==nil, so write barriers are not allowed.
 //go:nowritebarrier
-func newosproc(mp *m, stk unsafe.Pointer) {
+func newosproc(mp *m) {
+	stk := unsafe.Pointer(mp.g0.stack.hi)
 	if false {
 		print("newosproc stk=", stk, " m=", mp, " g=", mp.g0, " thr_start=", funcPC(thr_start), " id=", mp.id, " ostk=", &mp, "\n")
 	}
@@ -378,9 +385,11 @@ func sysargs(argc int32, argv **byte) {
 }
 
 const (
-	_AT_NULL   = 0  // Terminates the vector
-	_AT_PAGESZ = 6  // Page size in bytes
-	_AT_HWCAP  = 26 // CPU feature flags
+	_AT_NULL     = 0  // Terminates the vector
+	_AT_PAGESZ   = 6  // Page size in bytes
+	_AT_TIMEKEEP = 22 // Pointer to timehands.
+	_AT_HWCAP    = 25 // CPU feature flags
+	_AT_HWCAP2   = 26 // CPU feature flags 2
 )
 
 func sysauxv(auxv []uintptr) {
@@ -390,6 +399,8 @@ func sysauxv(auxv []uintptr) {
 		// _AT_NCPUS from auxv shouldn't be used due to golang.org/issue/15206
 		case _AT_PAGESZ:
 			physPageSize = val
+		case _AT_TIMEKEEP:
+			timekeepSharedPage = (*vdsoTimekeep)(unsafe.Pointer(val))
 		}
 
 		archauxv(tag, val)

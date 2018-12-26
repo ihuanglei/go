@@ -79,7 +79,7 @@ func testWinSplitListTestIsValid(t *testing.T, ti int, tt SplitListTest,
 		cmd := &exec.Cmd{
 			Path: comspec,
 			Args: []string{`/c`, cmdfile},
-			Env:  []string{`Path=` + tt.list, `SystemRoot=` + systemRoot},
+			Env:  []string{`Path=` + systemRoot + "/System32;" + tt.list, `SystemRoot=` + systemRoot},
 			Dir:  tmp,
 		}
 		out, err := cmd.CombinedOutput()
@@ -431,7 +431,7 @@ func TestToNorm(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = os.MkdirAll(strings.Replace(testPath, "{{tmp}}", ctmp, -1), 0777)
+	err = os.MkdirAll(strings.ReplaceAll(testPath, "{{tmp}}", ctmp), 0777)
 	if err != nil {
 		t.Fatal(err)
 	}

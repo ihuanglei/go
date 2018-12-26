@@ -158,13 +158,26 @@ func shouldEscape(c byte, mode encoding) bool {
 		}
 	}
 
+	if mode == encodeFragment {
+		// RFC 3986 §2.2 allows not escaping sub-delims. A subset of sub-delims are
+		// included in reserved from RFC 2396 §2.2. The remaining sub-delims do not
+		// need to be escaped. To minimize potential breakage, we apply two restrictions:
+		// (1) we always escape sub-delims outside of the fragment, and (2) we always
+		// escape single quote to avoid breaking callers that had previously assumed that
+		// single quotes would be escaped. See issue #19917.
+		switch c {
+		case '!', '(', ')', '*':
+			return false
+		}
+	}
+
 	// Everything else must be escaped.
 	return true
 }
 
 // QueryUnescape does the inverse transformation of QueryEscape,
 // converting each 3-byte encoded substring of the form "%AB" into the
-// hex-decoded byte 0xAB. It also converts '+' into ' ' (space).
+// hex-decoded byte 0xAB.
 // It returns an error if any % is not followed by two hexadecimal
 // digits.
 func QueryUnescape(s string) (string, error) {
@@ -291,7 +304,26 @@ func escape(s string, mode encoding) string {
 		return s
 	}
 
-	t := make([]byte, len(s)+2*hexCount)
+	var buf [64]byte
+	var t []byte
+
+	required := len(s) + 2*hexCount
+	if required <= len(buf) {
+		t = buf[:required]
+	} else {
+		t = make([]byte, required)
+	}
+
+	if hexCount == 0 {
+		copy(t, s)
+		for i := 0; i < len(s); i++ {
+			if s[i] == ' ' {
+				t[i] = '+'
+			}
+		}
+		return string(t)
+	}
+
 	j := 0
 	for i := 0; i < len(s); i++ {
 		switch c := s[i]; {
@@ -952,7 +984,7 @@ func (u *URL) Parse(ref string) (*URL, error) {
 }
 
 // ResolveReference resolves a URI reference to an absolute URI from
-// an absolute base URI, per RFC 3986 Section 5.2.  The URI reference
+// an absolute base URI u, per RFC 3986 Section 5.2. The URI reference
 // may be relative or absolute. ResolveReference always returns a new
 // URL instance, even if the returned URL is identical to either the
 // base or reference. If ref is an absolute URL, then ResolveReference

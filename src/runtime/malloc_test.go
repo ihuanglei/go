@@ -7,6 +7,7 @@ package runtime_test
 import (
 	"flag"
 	"fmt"
+	"internal/race"
 	"internal/testenv"
 	"os"
 	"os/exec"
@@ -18,7 +19,11 @@ import (
 	"unsafe"
 )
 
+var testMemStatsCount int
+
 func TestMemStats(t *testing.T) {
+	testMemStatsCount++
+
 	// Make sure there's at least one forced GC.
 	GC()
 
@@ -34,6 +39,13 @@ func TestMemStats(t *testing.T) {
 	}
 	le := func(thresh float64) func(interface{}) error {
 		return func(x interface{}) error {
+			// These sanity tests aren't necessarily valid
+			// with high -test.count values, so only run
+			// them once.
+			if testMemStatsCount > 1 {
+				return nil
+			}
+
 			if reflect.ValueOf(x).Convert(reflect.TypeOf(thresh)).Float() < thresh {
 				return nil
 			}
@@ -156,6 +168,14 @@ func TestTinyAlloc(t *testing.T) {
 	}
 }
 
+func TestPhysicalMemoryUtilization(t *testing.T) {
+	got := runTestProg(t, "testprog", "GCPhys")
+	want := "OK\n"
+	if got != want {
+		t.Fatalf("expected %q, but got %q", want, got)
+	}
+}
+
 type acLink struct {
 	x [1 << 20]byte
 }
@@ -163,6 +183,14 @@ type acLink struct {
 var arenaCollisionSink []*acLink
 
 func TestArenaCollision(t *testing.T) {
+	if GOOS == "darwin" && race.Enabled {
+		// Skip this test on Darwin in race mode because Darwin 10.10 has
+		// issues following arena hints and runs out of them in race mode, so
+		// MAP_FIXED is used to ensure we keep the heap in the memory region the
+		// race detector expects.
+		// TODO(mknyszek): Delete this when Darwin 10.10 is no longer supported.
+		t.Skip("disabled on Darwin with race mode since MAP_FIXED is used")
+	}
 	testenv.MustHaveExec(t)
 
 	// Test that mheap.sysAlloc handles collisions with other
@@ -170,7 +198,17 @@ func TestArenaCollision(t *testing.T) {
 	if os.Getenv("TEST_ARENA_COLLISION") != "1" {
 		cmd := testenv.CleanCmdEnv(exec.Command(os.Args[0], "-test.run=TestArenaCollision", "-test.v"))
 		cmd.Env = append(cmd.Env, "TEST_ARENA_COLLISION=1")
-		if out, err := cmd.CombinedOutput(); !strings.Contains(string(out), "PASS\n") || err != nil {
+		out, err := cmd.CombinedOutput()
+		if race.Enabled {
+			// This test runs the runtime out of hint
+			// addresses, so it will start mapping the
+			// heap wherever it can. The race detector
+			// doesn't support this, so look for the
+			// expected failure.
+			if want := "too many address space collisions"; !strings.Contains(string(out), want) {
+				t.Fatalf("want %q, got:\n%s", want, string(out))
+			}
+		} else if !strings.Contains(string(out), "PASS\n") || err != nil {
 			t.Fatalf("%s\n(exit status %v)", string(out), err)
 		}
 		return

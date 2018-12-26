@@ -93,7 +93,7 @@ func putelfsym(ctxt *Link, x *sym.Symbol, s string, t SymbolType, addr int64, go
 	case UndefinedSym:
 		// ElfType is only set for symbols read from Go shared libraries, but
 		// for other symbols it is left as STT_NOTYPE which is fine.
-		typ = int(x.ElfType)
+		typ = int(x.ElfType())
 
 	case TLSSym:
 		typ = STT_TLS
@@ -128,7 +128,7 @@ func putelfsym(ctxt *Link, x *sym.Symbol, s string, t SymbolType, addr int64, go
 	// maybe one day STB_WEAK.
 	bind := STB_GLOBAL
 
-	if x.Version != 0 || x.Attr.VisibilityHidden() || x.Attr.Local() {
+	if x.IsFileLocal() || x.Attr.VisibilityHidden() || x.Attr.Local() {
 		bind = STB_LOCAL
 	}
 
@@ -224,7 +224,7 @@ func putplan9sym(ctxt *Link, x *sym.Symbol, s string, typ SymbolType, addr int64
 	t := int(typ)
 	switch typ {
 	case TextSym, DataSym, BSSSym:
-		if x.Version != 0 {
+		if x.IsFileLocal() {
 			t += 'a' - 'A'
 		}
 		fallthrough
@@ -368,28 +368,30 @@ func (ctxt *Link) symtab() {
 	// pseudo-symbols to mark locations of type, string, and go string data.
 	var symtype *sym.Symbol
 	var symtyperel *sym.Symbol
-	if ctxt.UseRelro() && (ctxt.BuildMode == BuildModeCArchive || ctxt.BuildMode == BuildModeCShared || ctxt.BuildMode == BuildModePIE) {
-		s = ctxt.Syms.Lookup("type.*", 0)
+	if !ctxt.DynlinkingGo() {
+		if ctxt.UseRelro() && (ctxt.BuildMode == BuildModeCArchive || ctxt.BuildMode == BuildModeCShared || ctxt.BuildMode == BuildModePIE) {
+			s = ctxt.Syms.Lookup("type.*", 0)
 
-		s.Type = sym.STYPE
-		s.Size = 0
-		s.Attr |= sym.AttrReachable
-		symtype = s
+			s.Type = sym.STYPE
+			s.Size = 0
+			s.Attr |= sym.AttrReachable
+			symtype = s
 
-		s = ctxt.Syms.Lookup("typerel.*", 0)
+			s = ctxt.Syms.Lookup("typerel.*", 0)
 
-		s.Type = sym.STYPERELRO
-		s.Size = 0
-		s.Attr |= sym.AttrReachable
-		symtyperel = s
-	} else if !ctxt.DynlinkingGo() {
-		s = ctxt.Syms.Lookup("type.*", 0)
+			s.Type = sym.STYPERELRO
+			s.Size = 0
+			s.Attr |= sym.AttrReachable
+			symtyperel = s
+		} else {
+			s = ctxt.Syms.Lookup("type.*", 0)
 
-		s.Type = sym.STYPE
-		s.Size = 0
-		s.Attr |= sym.AttrReachable
-		symtype = s
-		symtyperel = s
+			s.Type = sym.STYPE
+			s.Size = 0
+			s.Attr |= sym.AttrReachable
+			symtype = s
+			symtyperel = s
+		}
 	}
 
 	groupSym := func(name string, t sym.SymKind) *sym.Symbol {
@@ -430,6 +432,10 @@ func (ctxt *Link) symtab() {
 	// just defined above will be first.
 	// hide the specific symbols.
 	for _, s := range ctxt.Syms.Allsym {
+		if ctxt.LinkMode != LinkExternal && isStaticTemp(s.Name) {
+			s.Attr |= sym.AttrNotInSymbolTable
+		}
+
 		if !s.Attr.Reachable() || s.Attr.Special() || s.Type != sym.SRODATA {
 			continue
 		}
@@ -500,7 +506,7 @@ func (ctxt *Link) symtab() {
 		abihashgostr.AddAddr(ctxt.Arch, hashsym)
 		abihashgostr.AddUint(ctxt.Arch, uint64(hashsym.Size))
 	}
-	if ctxt.BuildMode == BuildModePlugin || ctxt.Syms.ROLookup("plugin.Open", 0) != nil {
+	if ctxt.BuildMode == BuildModePlugin || ctxt.CanUsePlugins() {
 		for _, l := range ctxt.Library {
 			s := ctxt.Syms.Lookup("go.link.pkghashbytes."+l.Pkg, 0)
 			s.Attr |= sym.AttrReachable
@@ -673,4 +679,11 @@ func (ctxt *Link) symtab() {
 		lastmoduledatap.Size = 0 // overwrite existing value
 		lastmoduledatap.AddAddr(ctxt.Arch, moduledata)
 	}
+}
+
+func isStaticTemp(name string) bool {
+	if i := strings.LastIndex(name, "/"); i >= 0 {
+		name = name[i:]
+	}
+	return strings.Contains(name, "..stmp_")
 }

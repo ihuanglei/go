@@ -44,6 +44,7 @@ func mkzversion(dir, file string) {
 //	const defaultGO386 = <go386>
 //	const defaultGOARM = <goarm>
 //	const defaultGOMIPS = <gomips>
+//	const defaultGOMIPS64 = <gomips64>
 //	const defaultGOOS = runtime.GOOS
 //	const defaultGOARCH = runtime.GOARCH
 //	const defaultGO_EXTLINK_ENABLED = <goextlinkenabled>
@@ -71,6 +72,7 @@ func mkzbootstrap(file string) {
 	fmt.Fprintf(&buf, "const defaultGO386 = `%s`\n", go386)
 	fmt.Fprintf(&buf, "const defaultGOARM = `%s`\n", goarm)
 	fmt.Fprintf(&buf, "const defaultGOMIPS = `%s`\n", gomips)
+	fmt.Fprintf(&buf, "const defaultGOMIPS64 = `%s`\n", gomips64)
 	fmt.Fprintf(&buf, "const defaultGOOS = runtime.GOOS\n")
 	fmt.Fprintf(&buf, "const defaultGOARCH = runtime.GOARCH\n")
 	fmt.Fprintf(&buf, "const defaultGO_EXTLINK_ENABLED = `%s`\n", goextlinkenabled)
@@ -85,6 +87,10 @@ func mkzbootstrap(file string) {
 // stack guard size. Larger multipliers are used for non-optimized
 // builds that have larger stack frames.
 func stackGuardMultiplier() int {
+	// On AIX, a larger stack is needed for syscalls
+	if goos == "aix" {
+		return 2
+	}
 	for _, s := range strings.Split(os.Getenv("GO_GCFLAGS"), " ") {
 		if s == "-N" {
 			return 2

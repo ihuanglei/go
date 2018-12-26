@@ -8,6 +8,7 @@
 package dwarf
 
 import (
+	"cmd/internal/objabi"
 	"errors"
 	"fmt"
 	"sort"
@@ -22,6 +23,9 @@ const LocPrefix = "go.loc."
 
 // RangePrefix is the prefix for all the symbols containing DWARF range lists.
 const RangePrefix = "go.range."
+
+// IsStmtPrefix is the prefix for all the symbols containing DWARF is_stmt info for the line number table.
+const IsStmtPrefix = "go.isstmt."
 
 // ConstInfoPrefix is the prefix for all symbols containing DWARF info
 // entries that contain constants.
@@ -175,6 +179,7 @@ type Context interface {
 	AddBytes(s Sym, b []byte)
 	AddAddress(s Sym, t interface{}, ofs int64)
 	AddSectionOffset(s Sym, size int, t interface{}, ofs int64)
+	AddDWARFAddrSectionOffset(s Sym, t interface{}, ofs int64)
 	CurrentOffset(s Sym) int64
 	RecordDclReference(from Sym, to Sym, dclIdx int, inlIndex int)
 	RecordChildDieOffsets(s Sym, vars []*Var, offsets []int32)
@@ -288,6 +293,7 @@ const (
 	// Attribute for DW_TAG_member of a struct type.
 	// Nonzero value indicates the struct field is an embedded field.
 	DW_AT_go_embedded_field = 0x2903
+	DW_AT_go_runtime_type   = 0x2904
 
 	DW_AT_internal_location = 253 // params and locals; not emitted
 )
@@ -298,6 +304,7 @@ const (
 const (
 	DW_ABRV_NULL = iota
 	DW_ABRV_COMPUNIT
+	DW_ABRV_COMPUNIT_TEXTLESS
 	DW_ABRV_FUNCTION
 	DW_ABRV_FUNCTION_ABSTRACT
 	DW_ABRV_FUNCTION_CONCRETE
@@ -357,6 +364,18 @@ var abbrevs = [DW_NABRV]dwAbbrev{
 			{DW_AT_stmt_list, DW_FORM_sec_offset},
 			{DW_AT_low_pc, DW_FORM_addr},
 			{DW_AT_ranges, DW_FORM_sec_offset},
+			{DW_AT_comp_dir, DW_FORM_string},
+			{DW_AT_producer, DW_FORM_string},
+		},
+	},
+
+	/* COMPUNIT_TEXTLESS */
+	{
+		DW_TAG_compile_unit,
+		DW_CHILDREN_yes,
+		[]dwAttrForm{
+			{DW_AT_name, DW_FORM_string},
+			{DW_AT_language, DW_FORM_data1},
 			{DW_AT_comp_dir, DW_FORM_string},
 			{DW_AT_producer, DW_FORM_string},
 		},
@@ -639,6 +658,7 @@ var abbrevs = [DW_NABRV]dwAbbrev{
 			{DW_AT_encoding, DW_FORM_data1},
 			{DW_AT_byte_size, DW_FORM_data1},
 			{DW_AT_go_kind, DW_FORM_data1},
+			{DW_AT_go_runtime_type, DW_FORM_addr},
 		},
 	},
 
@@ -652,6 +672,7 @@ var abbrevs = [DW_NABRV]dwAbbrev{
 			{DW_AT_type, DW_FORM_ref_addr},
 			{DW_AT_byte_size, DW_FORM_udata},
 			{DW_AT_go_kind, DW_FORM_data1},
+			{DW_AT_go_runtime_type, DW_FORM_addr},
 		},
 	},
 
@@ -663,6 +684,7 @@ var abbrevs = [DW_NABRV]dwAbbrev{
 			{DW_AT_name, DW_FORM_string},
 			{DW_AT_type, DW_FORM_ref_addr},
 			{DW_AT_go_kind, DW_FORM_data1},
+			{DW_AT_go_runtime_type, DW_FORM_addr},
 			{DW_AT_go_elem, DW_FORM_ref_addr},
 		},
 	},
@@ -674,8 +696,8 @@ var abbrevs = [DW_NABRV]dwAbbrev{
 		[]dwAttrForm{
 			{DW_AT_name, DW_FORM_string},
 			{DW_AT_byte_size, DW_FORM_udata},
-			// {DW_AT_type,	DW_FORM_ref_addr},
 			{DW_AT_go_kind, DW_FORM_data1},
+			{DW_AT_go_runtime_type, DW_FORM_addr},
 		},
 	},
 
@@ -687,6 +709,7 @@ var abbrevs = [DW_NABRV]dwAbbrev{
 			{DW_AT_name, DW_FORM_string},
 			{DW_AT_type, DW_FORM_ref_addr},
 			{DW_AT_go_kind, DW_FORM_data1},
+			{DW_AT_go_runtime_type, DW_FORM_addr},
 		},
 	},
 
@@ -698,6 +721,7 @@ var abbrevs = [DW_NABRV]dwAbbrev{
 			{DW_AT_name, DW_FORM_string},
 			{DW_AT_type, DW_FORM_ref_addr},
 			{DW_AT_go_kind, DW_FORM_data1},
+			{DW_AT_go_runtime_type, DW_FORM_addr},
 			{DW_AT_go_key, DW_FORM_ref_addr},
 			{DW_AT_go_elem, DW_FORM_ref_addr},
 		},
@@ -711,6 +735,7 @@ var abbrevs = [DW_NABRV]dwAbbrev{
 			{DW_AT_name, DW_FORM_string},
 			{DW_AT_type, DW_FORM_ref_addr},
 			{DW_AT_go_kind, DW_FORM_data1},
+			{DW_AT_go_runtime_type, DW_FORM_addr},
 		},
 	},
 
@@ -731,6 +756,7 @@ var abbrevs = [DW_NABRV]dwAbbrev{
 			{DW_AT_name, DW_FORM_string},
 			{DW_AT_byte_size, DW_FORM_udata},
 			{DW_AT_go_kind, DW_FORM_data1},
+			{DW_AT_go_runtime_type, DW_FORM_addr},
 			{DW_AT_go_elem, DW_FORM_ref_addr},
 		},
 	},
@@ -743,6 +769,7 @@ var abbrevs = [DW_NABRV]dwAbbrev{
 			{DW_AT_name, DW_FORM_string},
 			{DW_AT_byte_size, DW_FORM_udata},
 			{DW_AT_go_kind, DW_FORM_data1},
+			{DW_AT_go_runtime_type, DW_FORM_addr},
 		},
 	},
 
@@ -754,6 +781,7 @@ var abbrevs = [DW_NABRV]dwAbbrev{
 			{DW_AT_name, DW_FORM_string},
 			{DW_AT_byte_size, DW_FORM_udata},
 			{DW_AT_go_kind, DW_FORM_data1},
+			{DW_AT_go_runtime_type, DW_FORM_addr},
 		},
 	},
 
@@ -815,6 +843,15 @@ type DWDie struct {
 func putattr(ctxt Context, s Sym, abbrev int, form int, cls int, value int64, data interface{}) error {
 	switch form {
 	case DW_FORM_addr: // address
+		// Allow nil addresses for DW_AT_go_runtime_type.
+		if data == nil && value == 0 {
+			ctxt.AddInt(s, ctxt.PtrSize(), 0)
+			break
+		}
+		if cls == DW_CLS_GO_TYPEREF {
+			ctxt.AddSectionOffset(s, ctxt.PtrSize(), data, value)
+			break
+		}
 		ctxt.AddAddress(s, data, value)
 
 	case DW_FORM_block1: // block
@@ -858,7 +895,7 @@ func putattr(ctxt Context, s Sym, abbrev int, form int, cls int, value int64, da
 
 	case DW_FORM_data4: // constant, {line,loclist,mac,rangelist}ptr
 		if cls == DW_CLS_PTR { // DW_AT_stmt_list and DW_AT_ranges
-			ctxt.AddSectionOffset(s, 4, data, value)
+			ctxt.AddDWARFAddrSectionOffset(s, data, value)
 			break
 		}
 		ctxt.AddInt(s, 4, value)
@@ -895,7 +932,7 @@ func putattr(ctxt Context, s Sym, abbrev int, form int, cls int, value int64, da
 		if data == nil {
 			return fmt.Errorf("dwarf: null reference in %d", abbrev)
 		}
-		ctxt.AddSectionOffset(s, 4, data, value)
+		ctxt.AddDWARFAddrSectionOffset(s, data, value)
 
 	case DW_FORM_ref1, // reference within the compilation unit
 		DW_FORM_ref2,      // reference
@@ -930,7 +967,7 @@ Outer:
 	}
 }
 
-// HasChildren returns true if 'die' uses an abbrev that supports children.
+// HasChildren reports whether 'die' uses an abbrev that supports children.
 func HasChildren(die *DWDie) bool {
 	return abbrevs[die.Abbrev].children != 0
 }
@@ -1073,7 +1110,7 @@ func PutAbstractFunc(ctxt Context, s *FnState) error {
 		// be rewritten, since it would change the offsets of the
 		// child DIEs (which we're relying on in order for abstract
 		// origin references to work).
-		fullname = s.Importpath + "." + s.Name[3:]
+		fullname = objabi.PathToPrefix(s.Importpath) + "." + s.Name[3:]
 	}
 	putattr(ctxt, s.Absfn, abbrev, DW_FORM_string, DW_CLS_STRING, int64(len(fullname)), fullname)
 

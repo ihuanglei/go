@@ -49,6 +49,12 @@ func sys_umtx_wakeup(addr *uint32, val int32) int32
 
 func osyield()
 
+func kqueue() int32
+
+//go:noescape
+func kevent(kq int32, ch *keventt, nch int32, ev *keventt, nev int32, ts *timespec) int32
+func closeonexec(fd int32)
+
 const stackSystem = 0
 
 // From DragonFly's <sys/sysctl.h>
@@ -129,7 +135,8 @@ func lwp_start(uintptr)
 
 // May run with m.p==nil, so write barriers are not allowed.
 //go:nowritebarrier
-func newosproc(mp *m, stk unsafe.Pointer) {
+func newosproc(mp *m) {
+	stk := unsafe.Pointer(mp.g0.stack.hi)
 	if false {
 		print("newosproc stk=", stk, " m=", mp, " g=", mp.g0, " lwp_start=", funcPC(lwp_start), " id=", mp.id, " ostk=", &mp, "\n")
 	}

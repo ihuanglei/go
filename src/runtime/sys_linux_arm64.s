@@ -21,7 +21,7 @@
 #define SYS_openat		56
 #define SYS_close		57
 #define SYS_fcntl		25
-#define SYS_pselect6		72
+#define SYS_nanosleep		101
 #define SYS_mmap		222
 #define SYS_munmap		215
 #define SYS_setitimer		103
@@ -36,7 +36,7 @@
 #define SYS_getpid		172
 #define SYS_gettid		178
 #define SYS_kill		129
-#define SYS_tkill		130
+#define SYS_tgkill		131
 #define SYS_futex		98
 #define SYS_sched_getaffinity	123
 #define SYS_exit_group		94
@@ -129,14 +129,10 @@ TEXT runtime·usleep(SB),NOSPLIT,$24-4
 	MUL	R4, R5
 	MOVD	R5, 16(RSP)
 
-	// pselect6(0, 0, 0, 0, &ts, 0)
-	MOVD	$0, R0
-	MOVD	R0, R1
-	MOVD	R0, R2
-	MOVD	R0, R3
-	ADD	$8, RSP, R4
-	MOVD	R0, R5
-	MOVD	$SYS_pselect6, R8
+	// nanosleep(&ts, 0)
+	ADD	$8, RSP, R0
+	MOVD	$0, R1
+	MOVD	$SYS_nanosleep, R8
 	SVC
 	RET
 
@@ -147,11 +143,15 @@ TEXT runtime·gettid(SB),NOSPLIT,$0-4
 	RET
 
 TEXT runtime·raise(SB),NOSPLIT|NOFRAME,$0
+	MOVD	$SYS_getpid, R8
+	SVC
+	MOVW	R0, R19
 	MOVD	$SYS_gettid, R8
 	SVC
-	MOVW	R0, R0	// arg 1 tid
-	MOVW	sig+0(FP), R1	// arg 2
-	MOVD	$SYS_tkill, R8
+	MOVW	R0, R1	// arg 2 tid
+	MOVW	R19, R0	// arg 1 pid
+	MOVW	sig+0(FP), R2	// arg 3
+	MOVD	$SYS_tgkill, R8
 	SVC
 	RET
 
@@ -243,7 +243,7 @@ TEXT runtime·nanotime(SB),NOSPLIT,$24-8
 	MOVD	(g_sched+gobuf_sp)(R3), R1	// Set RSP to g0 stack
 
 noswitch:
-	SUB	$16, R1
+	SUB	$32, R1
 	BIC	$15, R1
 	MOVD	R1, RSP
 
@@ -296,6 +296,18 @@ TEXT runtime·rt_sigaction(SB),NOSPLIT|NOFRAME,$0-36
 	MOVW	R0, ret+32(FP)
 	RET
 
+// Call the function stored in _cgo_sigaction using the GCC calling convention.
+TEXT runtime·callCgoSigaction(SB),NOSPLIT,$0
+	MOVD	sig+0(FP), R0
+	MOVD	new+8(FP), R1
+	MOVD	old+16(FP), R2
+	MOVD	 _cgo_sigaction(SB), R3
+	SUB	$16, RSP		// reserve 16 bytes for sp-8 where fp may be saved.
+	BL	R3
+	ADD	$16, RSP
+	MOVW	R0, ret+24(FP)
+	RET
+
 TEXT runtime·sigfwd(SB),NOSPLIT,$0-32
 	MOVW	sig+8(FP), R0
 	MOVD	info+16(FP), R1
@@ -324,7 +336,7 @@ TEXT runtime·cgoSigtramp(SB),NOSPLIT,$0
 	MOVD	$runtime·sigtramp(SB), R3
 	B	(R3)
 
-TEXT runtime·mmap(SB),NOSPLIT|NOFRAME,$0
+TEXT runtime·sysMmap(SB),NOSPLIT|NOFRAME,$0
 	MOVD	addr+0(FP), R0
 	MOVD	n+8(FP), R1
 	MOVW	prot+16(FP), R2
@@ -345,7 +357,23 @@ ok:
 	MOVD	$0, err+40(FP)
 	RET
 
-TEXT runtime·munmap(SB),NOSPLIT|NOFRAME,$0
+// Call the function stored in _cgo_mmap using the GCC calling convention.
+// This must be called on the system stack.
+TEXT runtime·callCgoMmap(SB),NOSPLIT,$0
+	MOVD	addr+0(FP), R0
+	MOVD	n+8(FP), R1
+	MOVW	prot+16(FP), R2
+	MOVW	flags+20(FP), R3
+	MOVW	fd+24(FP), R4
+	MOVW	off+28(FP), R5
+	MOVD	_cgo_mmap(SB), R9
+	SUB	$16, RSP		// reserve 16 bytes for sp-8 where fp may be saved.
+	BL	R9
+	ADD	$16, RSP
+	MOVD	R0, ret+32(FP)
+	RET
+
+TEXT runtime·sysMunmap(SB),NOSPLIT|NOFRAME,$0
 	MOVD	addr+0(FP), R0
 	MOVD	n+8(FP), R1
 	MOVD	$SYS_munmap, R8
@@ -356,13 +384,24 @@ TEXT runtime·munmap(SB),NOSPLIT|NOFRAME,$0
 cool:
 	RET
 
+// Call the function stored in _cgo_munmap using the GCC calling convention.
+// This must be called on the system stack.
+TEXT runtime·callCgoMunmap(SB),NOSPLIT,$0
+	MOVD	addr+0(FP), R0
+	MOVD	n+8(FP), R1
+	MOVD	_cgo_munmap(SB), R9
+	SUB	$16, RSP		// reserve 16 bytes for sp-8 where fp may be saved.
+	BL	R9
+	ADD	$16, RSP
+	RET
+
 TEXT runtime·madvise(SB),NOSPLIT|NOFRAME,$0
 	MOVD	addr+0(FP), R0
 	MOVD	n+8(FP), R1
 	MOVW	flags+16(FP), R2
 	MOVD	$SYS_madvise, R8
 	SVC
-	// ignore failure - maybe pages are locked
+	MOVW	R0, ret+24(FP)
 	RET
 
 // int64 futex(int32 *uaddr, int32 op, int32 val,

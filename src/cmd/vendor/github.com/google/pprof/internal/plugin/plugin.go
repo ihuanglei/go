@@ -41,7 +41,8 @@ type Options struct {
 	//
 	// A common use for a custom HTTPServer is to provide custom
 	// authentication checks.
-	HTTPServer func(args *HTTPServerArgs) error
+	HTTPServer    func(args *HTTPServerArgs) error
+	HTTPTransport http.RoundTripper
 }
 
 // Writer provides a mechanism to write data under a certain name,
@@ -71,11 +72,15 @@ type FlagSet interface {
 	// single flag
 	StringList(name string, def string, usage string) *[]*string
 
-	// ExtraUsage returns any additional text that should be
-	// printed after the standard usage message.
-	// The typical use of ExtraUsage is to show any custom flags
-	// defined by the specific pprof plugins being used.
+	// ExtraUsage returns any additional text that should be printed after the
+	// standard usage message. The extra usage message returned includes all text
+	// added with AddExtraUsage().
+	// The typical use of ExtraUsage is to show any custom flags defined by the
+	// specific pprof plugins being used.
 	ExtraUsage() string
+
+	// AddExtraUsage appends additional text to the end of the extra usage message.
+	AddExtraUsage(eu string)
 
 	// Parse initializes the flags with their values for this run
 	// and returns the non-flag command line arguments.
@@ -191,6 +196,9 @@ type UI interface {
 	// IsTerminal returns whether the UI is known to be tied to an
 	// interactive terminal (as opposed to being redirected to a file).
 	IsTerminal() bool
+
+	// WantBrowser indicates whether a browser should be opened with the -http option.
+	WantBrowser() bool
 
 	// SetAutoComplete instructs the UI to call complete(cmd) to obtain
 	// the auto-completion of cmd, if the UI supports auto-completion at all.

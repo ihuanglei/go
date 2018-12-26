@@ -18,7 +18,7 @@ TEXT runtime·rt0_go(SB),NOSPLIT,$0
 
 	MOVL	AX, 16(SP)
 	MOVL	BX, 24(SP)
-	
+
 	// create istack out of the given (operating system) stack.
 	MOVL	$runtime·g0(SB), DI
 	LEAL	(-64*1024+104)(SP), BX
@@ -47,74 +47,7 @@ notintel:
 	CPUID
 	MOVL	AX, runtime·processorVersionInfo(SB)
 
-	TESTL	$(1<<26), DX // SSE2
-	SETNE	runtime·support_sse2(SB)
-
-	TESTL	$(1<<9), CX // SSSE3
-	SETNE	runtime·support_ssse3(SB)
-
-	TESTL	$(1<<19), CX // SSE4.1
-	SETNE	runtime·support_sse41(SB)
-
-	TESTL	$(1<<20), CX // SSE4.2
-	SETNE	runtime·support_sse42(SB)
-
-	TESTL	$(1<<23), CX // POPCNT
-	SETNE	runtime·support_popcnt(SB)
-
-	TESTL	$(1<<25), CX // AES
-	SETNE	runtime·support_aes(SB)
-
-	TESTL	$(1<<27), CX // OSXSAVE
-	SETNE	runtime·support_osxsave(SB)
-
-	// If OS support for XMM and YMM is not present
-	// support_avx will be set back to false later.
-	TESTL	$(1<<28), CX // AVX
-	SETNE	runtime·support_avx(SB)
-
-eax7:
-	// Load EAX=7/ECX=0 cpuid flags
-	CMPL	SI, $7
-	JLT	osavx
-	MOVL	$7, AX
-	MOVL	$0, CX
-	CPUID
-
-	TESTL	$(1<<3), BX // BMI1
-	SETNE	runtime·support_bmi1(SB)
-
-	// If OS support for XMM and YMM is not present
-	// support_avx2 will be set back to false later.
-	TESTL	$(1<<5), BX
-	SETNE	runtime·support_avx2(SB)
-
-	TESTL	$(1<<8), BX // BMI2
-	SETNE	runtime·support_bmi2(SB)
-
-	TESTL	$(1<<9), BX // ERMS
-	SETNE	runtime·support_erms(SB)
-
-osavx:
-	// nacl does not support XGETBV to test
-	// for XMM and YMM OS support.
-#ifndef GOOS_nacl
-	CMPB	runtime·support_osxsave(SB), $1
-	JNE	noavx
-	MOVL	$0, CX
-	// For XGETBV, OSXSAVE bit is required and sufficient
-	XGETBV
-	ANDL	$6, AX
-	CMPL	AX, $6 // Check for OS support of XMM and YMM registers.
-	JE nocpuinfo
-#endif
-noavx:
-	MOVB $0, runtime·support_avx(SB)
-	MOVB $0, runtime·support_avx2(SB)
-
 nocpuinfo:
-
-needtls:
 	LEAL	runtime·m0+m_tls(SB), DI
 	CALL	runtime·settls(SB)
 
@@ -217,7 +150,7 @@ TEXT runtime·gogo(SB), NOSPLIT, $8-4
 // to keep running g.
 TEXT runtime·mcall(SB), NOSPLIT, $0-4
 	MOVL	fn+0(FP), DI
-	
+
 	get_tls(CX)
 	MOVL	g(CX), AX	// save state in g->sched
 	MOVL	0(SP), BX	// caller's PC
@@ -384,9 +317,6 @@ TEXT runtime·morestack_noctxt(SB),NOSPLIT,$0
 	MOVL	$NAME(SB), AX;		\
 	JMP	AX
 // Note: can't just "JMP NAME(SB)" - bad inlining results.
-
-TEXT reflect·call(SB), NOSPLIT, $0-0
-	JMP	·reflectcall(SB)
 
 TEXT ·reflectcall(SB), NOSPLIT, $0-20
 	MOVLQZX argsize+12(FP), CX

@@ -35,9 +35,6 @@ equal:
 	MOVB	R1, ret+24(FP)
 	RET
 
-TEXT bytes·Equal(SB),NOSPLIT,$0-25
-	JMP	·Equal(SB)
-
 // memequal(a, b unsafe.Pointer, size uintptr) bool
 TEXT runtime·memequal(SB),NOSPLIT,$0-13
 	MOVW	a+0(FP), R1

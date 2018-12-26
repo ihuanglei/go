@@ -73,7 +73,7 @@ const (
 	O_CREATE int = syscall.O_CREAT  // create a new file if none exists.
 	O_EXCL   int = syscall.O_EXCL   // used with O_CREATE, file must not exist.
 	O_SYNC   int = syscall.O_SYNC   // open for synchronous I/O.
-	O_TRUNC  int = syscall.O_TRUNC  // if possible, truncate file when opened.
+	O_TRUNC  int = syscall.O_TRUNC  // truncate regular writable file when opened.
 )
 
 // Seek whence values.
@@ -221,7 +221,12 @@ func Mkdir(name string, perm FileMode) error {
 
 	// mkdir(2) itself won't handle the sticky bit on *BSD and Solaris
 	if !supportsCreateWithStickyBit && perm&ModeSticky != 0 {
-		setStickyBit(name)
+		e = setStickyBit(name)
+
+		if e != nil {
+			Remove(name)
+			return e
+		}
 	}
 
 	return nil
@@ -337,25 +342,28 @@ func TempDir() string {
 // On Plan 9, it returns $home/lib/cache.
 //
 // If the location cannot be determined (for example, $HOME is not defined),
-// then it will return an empty string.
-func UserCacheDir() string {
+// then it will return an error.
+func UserCacheDir() (string, error) {
 	var dir string
 
 	switch runtime.GOOS {
 	case "windows":
 		dir = Getenv("LocalAppData")
+		if dir == "" {
+			return "", errors.New("%LocalAppData% is not defined")
+		}
 
 	case "darwin":
 		dir = Getenv("HOME")
 		if dir == "" {
-			return ""
+			return "", errors.New("$HOME is not defined")
 		}
 		dir += "/Library/Caches"
 
 	case "plan9":
 		dir = Getenv("home")
 		if dir == "" {
-			return ""
+			return "", errors.New("$home is not defined")
 		}
 		dir += "/lib/cache"
 
@@ -364,13 +372,38 @@ func UserCacheDir() string {
 		if dir == "" {
 			dir = Getenv("HOME")
 			if dir == "" {
-				return ""
+				return "", errors.New("neither $XDG_CACHE_HOME nor $HOME are defined")
 			}
 			dir += "/.cache"
 		}
 	}
 
-	return dir
+	return dir, nil
+}
+
+// UserHomeDir returns the current user's home directory.
+//
+// On Unix, including macOS, it returns the $HOME environment variable.
+// On Windows, it returns %USERPROFILE%.
+// On Plan 9, it returns the $home environment variable.
+func UserHomeDir() (string, error) {
+	env, enverr := "HOME", "$HOME"
+	switch runtime.GOOS {
+	case "windows":
+		env, enverr = "USERPROFILE", "%userprofile%"
+	case "plan9":
+		env, enverr = "home", "$home"
+	case "nacl", "android":
+		return "/", nil
+	case "darwin":
+		if runtime.GOARCH == "arm" || runtime.GOARCH == "arm64" {
+			return "/", nil
+		}
+	}
+	if v := Getenv(env); v != "" {
+		return v, nil
+	}
+	return "", errors.New(enverr + " is not defined")
 }
 
 // Chmod changes the mode of the named file to mode.

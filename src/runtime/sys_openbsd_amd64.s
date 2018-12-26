@@ -90,10 +90,7 @@ TEXT runtime·exit(SB),NOSPLIT,$-8
 
 // func exitThread(wait *uint32)
 TEXT runtime·exitThread(SB),NOSPLIT,$0-8
-	MOVQ	wait+0(FP), AX
-	// We're done using the stack.
-	MOVL	$0, (AX)
-	MOVQ	$0, DI			// arg 1 - notdead
+	MOVQ	wait+0(FP), DI		// arg 1 - notdead
 	MOVL	$302, AX		// sys___threxit
 	SYSCALL
 	MOVL	$0xf1, 0xf1		// crash
@@ -308,7 +305,9 @@ TEXT runtime·madvise(SB),NOSPLIT,$0
 	MOVL	flags+16(FP), DX	// arg 3 - behav
 	MOVQ	$75, AX			// sys_madvise
 	SYSCALL
-	// ignore failure - maybe pages are locked
+	JCC	2(PC)
+	MOVL	$-1, AX
+	MOVL	AX, ret+24(FP)
 	RET
 
 TEXT runtime·sigaltstack(SB),NOSPLIT,$-8

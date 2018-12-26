@@ -21,7 +21,6 @@ var F32to64 = f32to64
 var Fcmp64 = fcmp64
 var Fintto64 = fintto64
 var F64toint = f64toint
-var Sqrt = sqrt
 
 var Entersyscall = entersyscall
 var Exitsyscall = exitsyscall
@@ -298,6 +297,7 @@ func ReadMemStatsSlow() (base, slow MemStats) {
 		slow.TotalAlloc = 0
 		slow.Mallocs = 0
 		slow.Frees = 0
+		slow.HeapReleased = 0
 		var bySize [_NumSizeClasses]struct {
 			Mallocs, Frees uint64
 		}
@@ -335,6 +335,10 @@ func ReadMemStatsSlow() (base, slow MemStats) {
 		for i := range slow.BySize {
 			slow.BySize[i].Mallocs = bySize[i].Mallocs
 			slow.BySize[i].Frees = bySize[i].Frees
+		}
+
+		for i := mheap_.scav.iter(); i.valid(); i = i.next() {
+			slow.HeapReleased += uint64(i.span().released())
 		}
 
 		getg().m.mallocing--
@@ -377,6 +381,8 @@ func (rw *RWMutex) Unlock() {
 	rw.rw.unlock()
 }
 
+const RuntimeHmapSize = unsafe.Sizeof(hmap{})
+
 func MapBucketsCount(m map[int]int) int {
 	h := *(**hmap)(unsafe.Pointer(&m))
 	return 1 << h.B
@@ -404,7 +410,7 @@ func LockOSCounts() (external, internal uint32) {
 //go:noinline
 func TracebackSystemstack(stk []uintptr, i int) int {
 	if i == 0 {
-		pc, sp := getcallerpc(), getcallersp(unsafe.Pointer(&stk))
+		pc, sp := getcallerpc(), getcallersp()
 		return gentraceback(pc, sp, 0, getg(), 0, &stk[0], len(stk), nil, nil, _TraceJumpStack)
 	}
 	n := 0
@@ -446,3 +452,64 @@ func GetNextArenaHint() uintptr {
 }
 
 type G = g
+
+func Getg() *G {
+	return getg()
+}
+
+//go:noinline
+func PanicForTesting(b []byte, i int) byte {
+	return unexportedPanicForTesting(b, i)
+}
+
+//go:noinline
+func unexportedPanicForTesting(b []byte, i int) byte {
+	return b[i]
+}
+
+func G0StackOverflow() {
+	systemstack(func() {
+		stackOverflow(nil)
+	})
+}
+
+func stackOverflow(x *byte) {
+	var buf [256]byte
+	stackOverflow(&buf[0])
+}
+
+func MapTombstoneCheck(m map[int]int) {
+	// Make sure emptyOne and emptyRest are distributed correctly.
+	// We should have a series of filled and emptyOne cells, followed by
+	// a series of emptyRest cells.
+	h := *(**hmap)(unsafe.Pointer(&m))
+	i := interface{}(m)
+	t := *(**maptype)(unsafe.Pointer(&i))
+
+	for x := 0; x < 1<<h.B; x++ {
+		b0 := (*bmap)(add(h.buckets, uintptr(x)*uintptr(t.bucketsize)))
+		n := 0
+		for b := b0; b != nil; b = b.overflow(t) {
+			for i := 0; i < bucketCnt; i++ {
+				if b.tophash[i] != emptyRest {
+					n++
+				}
+			}
+		}
+		k := 0
+		for b := b0; b != nil; b = b.overflow(t) {
+			for i := 0; i < bucketCnt; i++ {
+				if k < n && b.tophash[i] == emptyRest {
+					panic("early emptyRest")
+				}
+				if k >= n && b.tophash[i] != emptyRest {
+					panic("late non-emptyRest")
+				}
+				if k == n-1 && b.tophash[i] == emptyOne {
+					panic("last non-emptyRest entry is emptyOne")
+				}
+				k++
+			}
+		}
+	}
+}

@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+// +build !js
+
 package net
 
 import (
@@ -276,7 +278,7 @@ func checkUnicastStats(ifStats *ifStats, uniStats *routeStats) error {
 
 func checkMulticastStats(ifStats *ifStats, uniStats, multiStats *routeStats) error {
 	switch runtime.GOOS {
-	case "dragonfly", "nacl", "netbsd", "openbsd", "plan9", "solaris":
+	case "aix", "dragonfly", "nacl", "netbsd", "openbsd", "plan9", "solaris":
 	default:
 		// Test the existence of connected multicast route
 		// clones for IPv4. Unlike IPv6, IPv4 multicast

@@ -7,10 +7,10 @@ package template
 import (
 	"bytes"
 	"fmt"
+	"internal/fmtsort"
 	"io"
 	"reflect"
 	"runtime"
-	"sort"
 	"strings"
 	"text/template/parse"
 )
@@ -19,7 +19,14 @@ import (
 // templates. This limit is only practically reached by accidentally
 // recursive template invocations. This limit allows us to return
 // an error instead of triggering a stack overflow.
-const maxExecDepth = 100000
+var maxExecDepth = initMaxExecDepth()
+
+func initMaxExecDepth() int {
+	if runtime.GOARCH == "wasm" {
+		return 1000
+	}
+	return 100000
+}
 
 // state represents the state of an execution. It's not part of the
 // template so that multiple executions of the same template
@@ -53,8 +60,20 @@ func (s *state) pop(mark int) {
 	s.vars = s.vars[0:mark]
 }
 
-// setVar overwrites the top-nth variable on the stack. Used by range iterations.
-func (s *state) setVar(n int, value reflect.Value) {
+// setVar overwrites the last declared variable with the given name.
+// Used by variable assignments.
+func (s *state) setVar(name string, value reflect.Value) {
+	for i := s.mark() - 1; i >= 0; i-- {
+		if s.vars[i].name == name {
+			s.vars[i].value = value
+			return
+		}
+	}
+	s.errorf("undefined variable: %s", name)
+}
+
+// setTopVar overwrites the top-nth variable on the stack. Used by range iterations.
+func (s *state) setTopVar(n int, value reflect.Value) {
 	s.vars[len(s.vars)-n].value = value
 }
 
@@ -83,7 +102,7 @@ func (s *state) at(node parse.Node) {
 // doublePercent returns the string with %'s replaced by %%, if necessary,
 // so it can be used safely inside a Printf format string.
 func doublePercent(str string) string {
-	return strings.Replace(str, "%", "%%", -1)
+	return strings.ReplaceAll(str, "%", "%%")
 }
 
 // TODO: It would be nice if ExecError was more broken down, but
@@ -321,11 +340,11 @@ func (s *state) walkRange(dot reflect.Value, r *parse.RangeNode) {
 	oneIteration := func(index, elem reflect.Value) {
 		// Set top var (lexically the second if there are two) to the element.
 		if len(r.Pipe.Decl) > 0 {
-			s.setVar(1, elem)
+			s.setTopVar(1, elem)
 		}
 		// Set next var (lexically the first if there are two) to the index.
 		if len(r.Pipe.Decl) > 1 {
-			s.setVar(2, index)
+			s.setTopVar(2, index)
 		}
 		s.walk(elem, r.List)
 		s.pop(mark)
@@ -343,8 +362,9 @@ func (s *state) walkRange(dot reflect.Value, r *parse.RangeNode) {
 		if val.Len() == 0 {
 			break
 		}
-		for _, key := range sortKeys(val.MapKeys()) {
-			oneIteration(key, val.MapIndex(key))
+		om := fmtsort.Sort(val)
+		for i, key := range om.Key {
+			oneIteration(key, om.Value[i])
 		}
 		return
 	case reflect.Chan:
@@ -414,7 +434,11 @@ func (s *state) evalPipeline(dot reflect.Value, pipe *parse.PipeNode) (value ref
 		}
 	}
 	for _, variable := range pipe.Decl {
-		s.push(variable.Ident[0], value)
+		if pipe.IsAssign {
+			s.setVar(variable.Ident[0], value)
+		} else {
+			s.push(variable.Ident[0], value)
+		}
 	}
 	return value
 }
@@ -669,13 +693,13 @@ func (s *state) evalCall(dot, fun reflect.Value, node parse.Node, name string, a
 		}
 		argv[i] = s.validateType(final, t)
 	}
-	result := fun.Call(argv)
-	// If we have an error that is not nil, stop execution and return that error to the caller.
-	if len(result) == 2 && !result[1].IsNil() {
+	v, err := safeCall(fun, argv)
+	// If we have an error that is not nil, stop execution and return that
+	// error to the caller.
+	if err != nil {
 		s.at(node)
-		s.errorf("error calling %s: %s", name, result[1].Interface().(error))
+		s.errorf("error calling %s: %v", name, err)
 	}
-	v := result[0]
 	if v.Type() == reflectValueType {
 		v = v.Interface().(reflect.Value)
 	}
@@ -934,30 +958,4 @@ func printableValue(v reflect.Value) (interface{}, bool) {
 		}
 	}
 	return v.Interface(), true
-}
-
-// sortKeys sorts (if it can) the slice of reflect.Values, which is a slice of map keys.
-func sortKeys(v []reflect.Value) []reflect.Value {
-	if len(v) <= 1 {
-		return v
-	}
-	switch v[0].Kind() {
-	case reflect.Float32, reflect.Float64:
-		sort.Slice(v, func(i, j int) bool {
-			return v[i].Float() < v[j].Float()
-		})
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		sort.Slice(v, func(i, j int) bool {
-			return v[i].Int() < v[j].Int()
-		})
-	case reflect.String:
-		sort.Slice(v, func(i, j int) bool {
-			return v[i].String() < v[j].String()
-		})
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
-		sort.Slice(v, func(i, j int) bool {
-			return v[i].Uint() < v[j].Uint()
-		})
-	}
-	return v
 }

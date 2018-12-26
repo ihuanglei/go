@@ -176,7 +176,7 @@ var category = map[string]bool{
 // UnicodeData.txt has form:
 //	0037;DIGIT SEVEN;Nd;0;EN;;7;7;7;N;;;;;
 //	007A;LATIN SMALL LETTER Z;Ll;0;L;;;;;N;;;005A;;005A
-// See http://www.unicode.org/reports/tr44/ for a full explanation
+// See https://www.unicode.org/reports/tr44/ for a full explanation
 // The fields:
 const (
 	FCodePoint = iota
@@ -232,7 +232,7 @@ type Char struct {
 // Scripts.txt has form:
 //	A673          ; Cyrillic # Po       SLAVONIC ASTERISK
 //	A67C..A67D    ; Cyrillic # Mn   [2] COMBINING CYRILLIC KAVYKA..COMBINING CYRILLIC PAYEROK
-// See http://www.unicode.org/Public/5.1.0/ucd/UCD.html for full explanation
+// See https://www.unicode.org/Public/5.1.0/ucd/UCD.html for full explanation
 
 type Script struct {
 	lo, hi uint32 // range of code points
@@ -458,6 +458,39 @@ package unicode
 
 `
 
+var categoryMapping = map[string]string{
+	"Lu": "Letter, uppercase",
+	"Ll": "Letter, lowercase",
+	"Lt": "Letter, titlecase",
+	"Lm": "Letter, modifier",
+	"Lo": "Letter, other",
+	"Mn": "Mark, nonspacing",
+	"Mc": "Mark, spacing combining",
+	"Me": "Mark, enclosing",
+	"Nd": "Number, decimal digit",
+	"Nl": "Number, letter",
+	"No": "Number, other",
+	"Pc": "Punctuation, connector",
+	"Pd": "Punctuation, dash",
+	"Ps": "Punctuation, open",
+	"Pe": "Punctuation, close",
+	"Pi": "Punctuation, initial quote",
+	"Pf": "Punctuation, final quote",
+	"Po": "Punctuation, other",
+	"Sm": "Symbol, math",
+	"Sc": "Symbol, currency",
+	"Sk": "Symbol, modifier",
+	"So": "Symbol, other",
+	"Zs": "Separator, space",
+	"Zl": "Separator, line",
+	"Zp": "Separator, paragraph",
+	"Cc": "Other, control",
+	"Cf": "Other, format",
+	"Cs": "Other, surrogate",
+	"Co": "Other, private use",
+	"Cn": "Other, not assigned",
+}
+
 func printCategories() {
 	if *tablelist == "" {
 		return
@@ -528,9 +561,16 @@ func printCategories() {
 			varDecl = "\tTitle = _Lt;	// Title is the set of Unicode title case letters.\n"
 		}
 		if len(name) > 1 {
-			varDecl += fmt.Sprintf(
-				"\t%s = _%s;	// %s is the set of Unicode characters in category %s.\n",
-				name, name, name, name)
+			desc, ok := categoryMapping[name]
+			if ok {
+				varDecl += fmt.Sprintf(
+					"\t%s = _%s;	// %s is the set of Unicode characters in category %s (%s).\n",
+					name, name, name, name, desc)
+			} else {
+				varDecl += fmt.Sprintf(
+					"\t%s = _%s;	// %s is the set of Unicode characters in category %s.\n",
+					name, name, name, name)
+			}
 		}
 		decl[ndecl] = varDecl
 		ndecl++

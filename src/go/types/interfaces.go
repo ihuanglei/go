@@ -144,7 +144,7 @@ func (check *Checker) infoFromTypeLit(scope *Scope, iface *ast.InterfaceType, tn
 	}
 
 	if trace {
-		check.trace(iface.Pos(), "-- collect methods for %s (path = %s)", iface, pathString(path))
+		check.trace(iface.Pos(), "-- collect methods for %v (path = %s, objPath = %s)", iface, pathString(path), objPathString(check.objPath))
 		check.indent++
 		defer func() {
 			check.indent--
@@ -221,9 +221,9 @@ func (check *Checker) infoFromTypeLit(scope *Scope, iface *ast.InterfaceType, tn
 				var e *ifaceInfo
 				switch ename := f.Type.(type) {
 				case *ast.Ident:
-					e = check.infoFromTypeName(ename, path)
+					e = check.infoFromTypeName(scope, ename, path)
 				case *ast.SelectorExpr:
-					e = check.infoFromQualifiedTypeName(ename)
+					e = check.infoFromQualifiedTypeName(scope, ename)
 				default:
 					// The parser makes sure we only see one of the above.
 					// Constructed ASTs may contain other (invalid) nodes;
@@ -262,7 +262,7 @@ func (check *Checker) infoFromTypeLit(scope *Scope, iface *ast.InterfaceType, tn
 // which must denote a type whose underlying type is an interface.
 // The same result qualifications apply as for infoFromTypeLit.
 // infoFromTypeName should only be called from infoFromTypeLit.
-func (check *Checker) infoFromTypeName(name *ast.Ident, path []*TypeName) *ifaceInfo {
+func (check *Checker) infoFromTypeName(scope *Scope, name *ast.Ident, path []*TypeName) *ifaceInfo {
 	// A single call of infoFromTypeName handles a sequence of (possibly
 	// recursive) type declarations connected via unqualified type names.
 	// Each type declaration leading to another typename causes a "tail call"
@@ -291,7 +291,7 @@ func (check *Checker) infoFromTypeName(name *ast.Ident, path []*TypeName) *iface
 
 typenameLoop:
 	// name must be a type name denoting a type whose underlying type is an interface
-	obj := check.lookup(name.Name)
+	_, obj := scope.LookupParent(name.Name, check.pos)
 	if obj == nil {
 		return nil
 	}
@@ -333,9 +333,17 @@ typenameLoop:
 			goto typenameLoop
 		case *ast.SelectorExpr:
 			// type tname p.T
-			return check.infoFromQualifiedTypeName(typ)
+			return check.infoFromQualifiedTypeName(decl.file, typ)
 		case *ast.InterfaceType:
 			// type tname interface{...}
+			// If tname is fully type-checked at this point (tname.color() == black)
+			// we could use infoFromType here. But in this case, the interface must
+			// be in the check.interfaces cache as well, which will be hit when we
+			// call infoFromTypeLit below, and which will be faster. It is important
+			// that we use that previously computed interface because its methods
+			// have the correct receiver type (for go/types clients). Thus, the
+			// check.interfaces cache must be up-to-date across even across multiple
+			// check.Files calls (was bug - see issue #29029).
 			return check.infoFromTypeLit(decl.file, typ, tname, path)
 		}
 		// type tname X // and X is not an interface type
@@ -360,13 +368,13 @@ typenameLoop:
 }
 
 // infoFromQualifiedTypeName computes the method set for the given qualified type name, or nil.
-func (check *Checker) infoFromQualifiedTypeName(qname *ast.SelectorExpr) *ifaceInfo {
+func (check *Checker) infoFromQualifiedTypeName(scope *Scope, qname *ast.SelectorExpr) *ifaceInfo {
 	// see also Checker.selector
 	name, _ := qname.X.(*ast.Ident)
 	if name == nil {
 		return nil
 	}
-	obj1 := check.lookup(name.Name)
+	_, obj1 := scope.LookupParent(name.Name, check.pos)
 	if obj1 == nil {
 		return nil
 	}

@@ -36,7 +36,7 @@ func expandiface(t *types.Type) {
 		}
 
 		if !m.Type.IsInterface() {
-			yyerrorl(asNode(m.Nname).Pos, "interface contains embedded non-interface %v", m.Type)
+			yyerrorl(m.Pos, "interface contains embedded non-interface %v", m.Type)
 			m.SetBroke(true)
 			t.SetBroke(true)
 			// Add to fields so that error messages
@@ -52,10 +52,10 @@ func expandiface(t *types.Type) {
 		// method set.
 		for _, t1 := range m.Type.Fields().Slice() {
 			f := types.NewField()
+			f.Pos = m.Pos // preserve embedding position
+			f.Sym = t1.Sym
 			f.Type = t1.Type
 			f.SetBroke(t1.Broke())
-			f.Sym = t1.Sym
-			f.Nname = m.Nname // preserve embedding position
 			fields = append(fields, f)
 		}
 	}
@@ -100,7 +100,7 @@ func widstruct(errtype *types.Type, t *types.Type, o int64, flag int) int64 {
 			o = Rnd(o, int64(f.Type.Align))
 		}
 		f.Offset = o
-		if asNode(f.Nname) != nil {
+		if n := asNode(f.Nname); n != nil {
 			// addrescapes has similar code to update these offsets.
 			// Usually addrescapes runs after widstruct,
 			// in which case we could drop this,
@@ -108,11 +108,11 @@ func widstruct(errtype *types.Type, t *types.Type, o int64, flag int) int64 {
 			// NOTE(rsc): This comment may be stale.
 			// It's possible the ordering has changed and this is
 			// now the common case. I'm not sure.
-			if asNode(f.Nname).Name.Param.Stackcopy != nil {
-				asNode(f.Nname).Name.Param.Stackcopy.Xoffset = o
-				asNode(f.Nname).Xoffset = 0
+			if n.Name.Param.Stackcopy != nil {
+				n.Name.Param.Stackcopy.Xoffset = o
+				n.Xoffset = 0
 			} else {
-				asNode(f.Nname).Xoffset = o
+				n.Xoffset = o
 			}
 		}
 
@@ -208,7 +208,7 @@ func dowidth(t *types.Type) {
 	}
 
 	t.Width = -2
-	t.Align = 0
+	t.Align = 0 // 0 means use t.Width, below
 
 	et := t.Etype
 	switch et {
@@ -222,7 +222,7 @@ func dowidth(t *types.Type) {
 		}
 	}
 
-	w := int64(0)
+	var w int64
 	switch et {
 	default:
 		Fatalf("dowidth: unknown type: %v", t)
@@ -250,12 +250,8 @@ func dowidth(t *types.Type) {
 		w = 16
 		t.Align = uint8(Widthreg)
 
-	case TPTR32:
-		w = 4
-		checkwidth(t.Elem())
-
-	case TPTR64:
-		w = 8
+	case TPTR:
+		w = int64(Widthptr)
 		checkwidth(t.Elem())
 
 	case TUNSAFEPTR:
@@ -286,7 +282,7 @@ func dowidth(t *types.Type) {
 
 	case TMAP: // implemented as pointer
 		w = int64(Widthptr)
-		checkwidth(t.Val())
+		checkwidth(t.Elem())
 		checkwidth(t.Key())
 
 	case TFORW: // should have been filled in
@@ -370,7 +366,7 @@ func dowidth(t *types.Type) {
 
 	t.Width = w
 	if t.Align == 0 {
-		if w > 8 || w&(w-1) != 0 || w == 0 {
+		if w == 0 || w > 8 || w&(w-1) != 0 {
 			Fatalf("invalid alignment for %v", t)
 		}
 		t.Align = uint8(w)
@@ -427,12 +423,11 @@ func checkwidth(t *types.Type) {
 		return
 	}
 
-	if t.Deferwidth() {
-		return
+	// if type has not yet been pushed on deferredTypeStack yet, do it now
+	if !t.Deferwidth() {
+		t.SetDeferwidth(true)
+		deferredTypeStack = append(deferredTypeStack, t)
 	}
-	t.SetDeferwidth(true)
-
-	deferredTypeStack = append(deferredTypeStack, t)
 }
 
 func defercheckwidth() {
@@ -447,6 +442,7 @@ func resumecheckwidth() {
 	if defercalc == 0 {
 		Fatalf("resumecheckwidth")
 	}
+
 	for len(deferredTypeStack) > 0 {
 		t := deferredTypeStack[len(deferredTypeStack)-1]
 		deferredTypeStack = deferredTypeStack[:len(deferredTypeStack)-1]

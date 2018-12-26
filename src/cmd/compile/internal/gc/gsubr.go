@@ -31,6 +31,7 @@
 package gc
 
 import (
+	"cmd/compile/internal/ssa"
 	"cmd/compile/internal/types"
 	"cmd/internal/obj"
 	"cmd/internal/objabi"
@@ -48,6 +49,9 @@ type Progs struct {
 	curfn     *Node      // fn these Progs are for
 	progcache []obj.Prog // local progcache
 	cacheidx  int        // first free element of progcache
+
+	nextLive LivenessIndex // liveness index for the next Prog
+	prevLive LivenessIndex // last emitted liveness index
 }
 
 // newProgs returns a new Progs for fn.
@@ -66,6 +70,8 @@ func newProgs(fn *Node, worker int) *Progs {
 
 	pp.pos = fn.Pos
 	pp.settext(fn)
+	pp.nextLive = LivenessInvalid
+	pp.prevLive = LivenessInvalid
 	return pp
 }
 
@@ -102,6 +108,23 @@ func (pp *Progs) Free() {
 
 // Prog adds a Prog with instruction As to pp.
 func (pp *Progs) Prog(as obj.As) *obj.Prog {
+	if pp.nextLive.stackMapIndex != pp.prevLive.stackMapIndex {
+		// Emit stack map index change.
+		idx := pp.nextLive.stackMapIndex
+		pp.prevLive.stackMapIndex = idx
+		p := pp.Prog(obj.APCDATA)
+		Addrconst(&p.From, objabi.PCDATA_StackMapIndex)
+		Addrconst(&p.To, int64(idx))
+	}
+	if pp.nextLive.regMapIndex != pp.prevLive.regMapIndex {
+		// Emit register map index change.
+		idx := pp.nextLive.regMapIndex
+		pp.prevLive.regMapIndex = idx
+		p := pp.Prog(obj.APCDATA)
+		Addrconst(&p.From, objabi.PCDATA_RegMapIndex)
+		Addrconst(&p.To, int64(idx))
+	}
+
 	p := pp.next
 	pp.next = pp.NewProg()
 	pp.clearp(pp.next)
@@ -113,6 +136,13 @@ func (pp *Progs) Prog(as obj.As) *obj.Prog {
 
 	p.As = as
 	p.Pos = pp.pos
+	if pp.pos.IsStmt() == src.PosIsStmt {
+		// Clear IsStmt for later Progs at this pos provided that as can be marked as a stmt
+		if ssa.LosesStmtMark(as) {
+			return p
+		}
+		pp.pos = pp.pos.WithNotStmt()
+	}
 	return p
 }
 
@@ -155,30 +185,79 @@ func (pp *Progs) settext(fn *Node) {
 	ptxt.From.Type = obj.TYPE_MEM
 	ptxt.From.Name = obj.NAME_EXTERN
 	ptxt.From.Sym = fn.Func.lsym
-
-	p := pp.Prog(obj.AFUNCDATA)
-	Addrconst(&p.From, objabi.FUNCDATA_ArgsPointerMaps)
-	p.To.Type = obj.TYPE_MEM
-	p.To.Name = obj.NAME_EXTERN
-	p.To.Sym = &fn.Func.lsym.Func.GCArgs
-
-	p = pp.Prog(obj.AFUNCDATA)
-	Addrconst(&p.From, objabi.FUNCDATA_LocalsPointerMaps)
-	p.To.Type = obj.TYPE_MEM
-	p.To.Name = obj.NAME_EXTERN
-	p.To.Sym = &fn.Func.lsym.Func.GCLocals
 }
 
-func (f *Func) initLSym() {
+// initLSym defines f's obj.LSym and initializes it based on the
+// properties of f. This includes setting the symbol flags and ABI and
+// creating and initializing related DWARF symbols.
+//
+// initLSym must be called exactly once per function and must be
+// called for both functions with bodies and functions without bodies.
+func (f *Func) initLSym(hasBody bool) {
 	if f.lsym != nil {
 		Fatalf("Func.initLSym called twice")
 	}
 
-	if nam := f.Nname; !isblank(nam) {
+	if nam := f.Nname; !nam.isBlank() {
 		f.lsym = nam.Sym.Linksym()
 		if f.Pragma&Systemstack != 0 {
 			f.lsym.Set(obj.AttrCFunc, true)
 		}
+
+		var aliasABI obj.ABI
+		needABIAlias := false
+		if abi, ok := symabiDefs[f.lsym.Name]; ok && abi == obj.ABI0 {
+			// Symbol is defined as ABI0. Create an
+			// Internal -> ABI0 wrapper.
+			f.lsym.SetABI(obj.ABI0)
+			needABIAlias, aliasABI = true, obj.ABIInternal
+		} else {
+			// No ABI override. Check that the symbol is
+			// using the expected ABI.
+			want := obj.ABIInternal
+			if f.lsym.ABI() != want {
+				Fatalf("function symbol %s has the wrong ABI %v, expected %v", f.lsym.Name, f.lsym.ABI(), want)
+			}
+		}
+
+		if abi, ok := symabiRefs[f.lsym.Name]; ok && abi == obj.ABI0 {
+			// Symbol is referenced as ABI0. Create an
+			// ABI0 -> Internal wrapper if necessary.
+			if f.lsym.ABI() != obj.ABI0 {
+				needABIAlias, aliasABI = true, obj.ABI0
+			}
+		}
+
+		if !needABIAlias && allABIs {
+			// The compiler was asked to produce ABI
+			// wrappers for everything.
+			switch f.lsym.ABI() {
+			case obj.ABI0:
+				needABIAlias, aliasABI = true, obj.ABIInternal
+			case obj.ABIInternal:
+				needABIAlias, aliasABI = true, obj.ABI0
+			}
+		}
+
+		if needABIAlias {
+			// These LSyms have the same name as the
+			// native function, so we create them directly
+			// rather than looking them up. The uniqueness
+			// of f.lsym ensures uniqueness of asym.
+			asym := &obj.LSym{
+				Name: f.lsym.Name,
+				Type: objabi.SABIALIAS,
+				R:    []obj.Reloc{{Sym: f.lsym}}, // 0 size, so "informational"
+			}
+			asym.SetABI(aliasABI)
+			asym.Set(obj.AttrDuplicateOK, true)
+			Ctxt.ABIAliases = append(Ctxt.ABIAliases, asym)
+		}
+	}
+
+	if !hasBody {
+		// For body-less functions, we only create the LSym.
+		return
 	}
 
 	var flag int

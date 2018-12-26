@@ -86,9 +86,9 @@ func urlProcessor(norm bool, args ...interface{}) string {
 }
 
 // processURLOnto appends a normalized URL corresponding to its input to b
-// and returns true if the appended content differs from s.
+// and reports whether the appended content differs from s.
 func processURLOnto(s string, norm bool, b *bytes.Buffer) bool {
-	b.Grow(b.Cap() + len(s) + 16)
+	b.Grow(len(s) + 16)
 	written := 0
 	// The byte loop below assumes that all URLs use UTF-8 as the
 	// content-encoding. This is similar to the URI to IRI encoding scheme
@@ -156,7 +156,7 @@ func srcsetFilterAndEscaper(args ...interface{}) string {
 			s = b.String()
 		}
 		// Additionally, commas separate one source from another.
-		return strings.Replace(s, ",", "%2c", -1)
+		return strings.ReplaceAll(s, ",", "%2c")
 	}
 
 	var b bytes.Buffer
@@ -181,7 +181,7 @@ func isHTMLSpace(c byte) bool {
 	return (c <= 0x20) && 0 != (htmlSpaceAndASCIIAlnumBytes[c>>3]&(1<<uint(c&0x7)))
 }
 
-func isHTMLSpaceOrAsciiAlnum(c byte) bool {
+func isHTMLSpaceOrASCIIAlnum(c byte) bool {
 	return (c < 0x80) && 0 != (htmlSpaceAndASCIIAlnumBytes[c>>3]&(1<<uint(c&0x7)))
 }
 
@@ -202,7 +202,7 @@ func filterSrcsetElement(s string, left int, right int, b *bytes.Buffer) {
 		// we don't need to URL normalize it.
 		metadataOk := true
 		for i := end; i < right; i++ {
-			if !isHTMLSpaceOrAsciiAlnum(s[i]) {
+			if !isHTMLSpaceOrASCIIAlnum(s[i]) {
 				metadataOk = false
 				break
 			}

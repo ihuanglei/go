@@ -9,13 +9,17 @@ package work
 import (
 	"cmd/go/internal/base"
 	"cmd/go/internal/cfg"
+	"cmd/go/internal/load"
+	"cmd/internal/sys"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 func BuildInit() {
+	load.ModInit()
 	instrumentInit()
 	buildModeInit()
 
@@ -39,15 +43,16 @@ func instrumentInit() {
 		fmt.Fprintf(os.Stderr, "go %s: may not use -race and -msan simultaneously\n", flag.Args()[0])
 		os.Exit(2)
 	}
-	if cfg.BuildMSan && (cfg.Goos != "linux" || cfg.Goarch != "amd64") {
+	if cfg.BuildMSan && !sys.MSanSupported(cfg.Goos, cfg.Goarch) {
 		fmt.Fprintf(os.Stderr, "-msan is not supported on %s/%s\n", cfg.Goos, cfg.Goarch)
 		os.Exit(2)
 	}
-	if cfg.Goarch != "amd64" || cfg.Goos != "linux" && cfg.Goos != "freebsd" && cfg.Goos != "darwin" && cfg.Goos != "windows" {
-		fmt.Fprintf(os.Stderr, "go %s: -race and -msan are only supported on linux/amd64, freebsd/amd64, darwin/amd64 and windows/amd64\n", flag.Args()[0])
-		os.Exit(2)
+	if cfg.BuildRace {
+		if !sys.RaceDetectorSupported(cfg.Goos, cfg.Goarch) {
+			fmt.Fprintf(os.Stderr, "go %s: -race is only supported on linux/amd64, linux/ppc64le, linux/arm64, freebsd/amd64, netbsd/amd64, darwin/amd64 and windows/amd64\n", flag.Args()[0])
+			os.Exit(2)
+		}
 	}
-
 	mode := "race"
 	if cfg.BuildMSan {
 		mode = "msan"
@@ -77,16 +82,23 @@ func buildModeInit() {
 		pkgsFilter = pkgsNotMain
 	case "c-archive":
 		pkgsFilter = oneMainPkg
-		switch platform {
-		case "darwin/arm", "darwin/arm64":
-			codegenArg = "-shared"
-		default:
-			switch cfg.Goos {
-			case "dragonfly", "freebsd", "linux", "netbsd", "openbsd", "solaris":
-				// Use -shared so that the result is
-				// suitable for inclusion in a PIE or
-				// shared library.
+		if gccgo {
+			codegenArg = "-fPIC"
+		} else {
+			switch platform {
+			case "darwin/arm", "darwin/arm64":
 				codegenArg = "-shared"
+			default:
+				switch cfg.Goos {
+				case "dragonfly", "freebsd", "linux", "netbsd", "openbsd", "solaris":
+					if platform == "linux/ppc64" {
+						base.Fatalf("-buildmode=c-archive not supported on %s\n", platform)
+					}
+					// Use -shared so that the result is
+					// suitable for inclusion in a PIE or
+					// shared library.
+					codegenArg = "-shared"
+				}
 			}
 		}
 		cfg.ExeSuffix = ".a"
@@ -121,6 +133,9 @@ func buildModeInit() {
 		default:
 			ldBuildmode = "exe"
 		}
+		if gccgo {
+			codegenArg = ""
+		}
 	case "exe":
 		pkgsFilter = pkgsMain
 		ldBuildmode = "exe"
@@ -135,7 +150,7 @@ func buildModeInit() {
 			base.Fatalf("-buildmode=pie not supported when -race is enabled")
 		}
 		if gccgo {
-			base.Fatalf("-buildmode=pie not supported by gccgo")
+			codegenArg = "-fPIE"
 		} else {
 			switch platform {
 			case "linux/386", "linux/amd64", "linux/arm", "linux/arm64", "linux/ppc64le", "linux/s390x",
@@ -216,4 +231,31 @@ func buildModeInit() {
 			cfg.BuildContext.InstallSuffix += codegenArg[1:]
 		}
 	}
+
+	switch cfg.BuildMod {
+	case "":
+		// ok
+	case "readonly", "vendor":
+		if load.ModLookup == nil && !inGOFLAGS("-mod") {
+			base.Fatalf("build flag -mod=%s only valid when using modules", cfg.BuildMod)
+		}
+	default:
+		base.Fatalf("-mod=%s not supported (can be '', 'readonly', or 'vendor')", cfg.BuildMod)
+	}
+}
+
+func inGOFLAGS(flag string) bool {
+	for _, goflag := range base.GOFLAGS() {
+		name := goflag
+		if strings.HasPrefix(name, "--") {
+			name = name[1:]
+		}
+		if i := strings.Index(name, "="); i >= 0 {
+			name = name[:i]
+		}
+		if name == flag {
+			return true
+		}
+	}
+	return false
 }

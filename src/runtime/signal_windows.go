@@ -27,7 +27,7 @@ func lastcontinuetramp()
 
 func initExceptionHandler() {
 	stdcall2(_AddVectoredExceptionHandler, 1, funcPC(exceptiontramp))
-	if _AddVectoredContinueHandler == nil || unsafe.Sizeof(&_AddVectoredContinueHandler) == 4 {
+	if _AddVectoredContinueHandler == nil || GOARCH == "386" {
 		// use SetUnhandledExceptionFilter for windows-386 or
 		// if VectoredContinueHandler is unavailable.
 		// note: SetUnhandledExceptionFilter handler won't be called, if debugging.
@@ -38,6 +38,30 @@ func initExceptionHandler() {
 	}
 }
 
+// isAbort returns true, if context r describes exception raised
+// by calling runtime.abort function.
+//
+//go:nosplit
+func isAbort(r *context) bool {
+	switch GOARCH {
+	case "386", "amd64":
+		// In the case of an abort, the exception IP is one byte after
+		// the INT3 (this differs from UNIX OSes).
+		return isAbortPC(r.ip() - 1)
+	case "arm":
+		return isAbortPC(r.ip())
+	default:
+		return false
+	}
+}
+
+// isgoexception reports whether this exception should be translated
+// into a Go panic.
+//
+// It is nosplit to avoid growing the stack in case we're aborting
+// because of a stack overflow.
+//
+//go:nosplit
 func isgoexception(info *exceptionrecord, r *context) bool {
 	// Only handle exception if executing instructions in Go binary
 	// (not Windows library code).
@@ -46,7 +70,7 @@ func isgoexception(info *exceptionrecord, r *context) bool {
 		return false
 	}
 
-	if isAbortPC(r.ip()) {
+	if isAbort(r) {
 		// Never turn abort into a panic.
 		return false
 	}
@@ -71,10 +95,18 @@ func isgoexception(info *exceptionrecord, r *context) bool {
 // Called by sigtramp from Windows VEH handler.
 // Return value signals whether the exception has been handled (EXCEPTION_CONTINUE_EXECUTION)
 // or should be made available to other handlers in the chain (EXCEPTION_CONTINUE_SEARCH).
+//
+// This is the first entry into Go code for exception handling. This
+// is nosplit to avoid growing the stack until we've checked for
+// _EXCEPTION_BREAKPOINT, which is raised if we overflow the g0 stack,
+//
+//go:nosplit
 func exceptionhandler(info *exceptionrecord, r *context, gp *g) int32 {
 	if !isgoexception(info, r) {
 		return _EXCEPTION_CONTINUE_SEARCH
 	}
+
+	// After this point, it is safe to grow the stack.
 
 	if gp.throwsplit {
 		// We can't safely sigpanic because it may grow the
@@ -100,10 +132,18 @@ func exceptionhandler(info *exceptionrecord, r *context, gp *g) int32 {
 	if r.ip() != 0 {
 		sp := unsafe.Pointer(r.sp())
 		sp = add(sp, ^(unsafe.Sizeof(uintptr(0)) - 1)) // sp--
-		*((*uintptr)(sp)) = r.ip()
-		r.setsp(uintptr(sp))
+		r.set_sp(uintptr(sp))
+		switch GOARCH {
+		default:
+			panic("unsupported architecture")
+		case "386", "amd64":
+			*((*uintptr)(sp)) = r.ip()
+		case "arm":
+			*((*uintptr)(sp)) = r.lr()
+			r.set_lr(r.ip())
+		}
 	}
-	r.setip(funcPC(sigpanic))
+	r.set_ip(funcPC(sigpanic))
 	return _EXCEPTION_CONTINUE_EXECUTION
 }
 
@@ -111,6 +151,10 @@ func exceptionhandler(info *exceptionrecord, r *context, gp *g) int32 {
 // if ExceptionHandler returns EXCEPTION_CONTINUE_EXECUTION.
 // firstcontinuehandler will stop that search,
 // if exceptionhandler did the same earlier.
+//
+// It is nosplit for the same reason as exceptionhandler.
+//
+//go:nosplit
 func firstcontinuehandler(info *exceptionrecord, r *context, gp *g) int32 {
 	if !isgoexception(info, r) {
 		return _EXCEPTION_CONTINUE_SEARCH
@@ -122,6 +166,10 @@ var testingWER bool
 
 // lastcontinuehandler is reached, because runtime cannot handle
 // current exception. lastcontinuehandler will print crash info and exit.
+//
+// It is nosplit for the same reason as exceptionhandler.
+//
+//go:nosplit
 func lastcontinuehandler(info *exceptionrecord, r *context, gp *g) int32 {
 	if testingWER {
 		return _EXCEPTION_CONTINUE_SEARCH
@@ -134,6 +182,13 @@ func lastcontinuehandler(info *exceptionrecord, r *context, gp *g) int32 {
 	}
 	panicking = 1
 
+	// In case we're handling a g0 stack overflow, blow away the
+	// g0 stack bounds so we have room to print the traceback. If
+	// this somehow overflows the stack, the OS will trap it.
+	_g_.stack.lo = 0
+	_g_.stackguard0 = _g_.stack.lo + _StackGuard
+	_g_.stackguard1 = _g_.stackguard0
+
 	print("Exception ", hex(info.exceptioncode), " ", hex(info.exceptioninformation[0]), " ", hex(info.exceptioninformation[1]), " ", hex(r.ip()), "\n")
 
 	print("PC=", hex(r.ip()), "\n")
@@ -145,9 +200,15 @@ func lastcontinuehandler(info *exceptionrecord, r *context, gp *g) int32 {
 	}
 	print("\n")
 
+	// TODO(jordanrh1): This may be needed for 386/AMD64 as well.
+	if GOARCH == "arm" {
+		_g_.m.throwing = 1
+		_g_.m.caughtsig.set(gp)
+	}
+
 	level, _, docrash := gotraceback()
 	if level > 0 {
-		tracebacktrap(r.ip(), r.sp(), 0, gp)
+		tracebacktrap(r.ip(), r.sp(), r.lr(), gp)
 		tracebackothers(gp)
 		dumpregs(r)
 	}
@@ -224,6 +285,7 @@ func signame(sig uint32) string {
 	return ""
 }
 
+//go:nosplit
 func crash() {
 	// TODO: This routine should do whatever is needed
 	// to make the Windows program abort/crash as it

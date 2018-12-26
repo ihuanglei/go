@@ -76,7 +76,7 @@ type Checker struct {
 	fset *token.FileSet
 	pkg  *Package
 	*Info
-	objMap map[Object]*declInfo   // maps package-level object to declaration info
+	objMap map[Object]*declInfo   // maps package-level objects and (non-interface) methods to declaration info
 	impMap map[importKey]*Package // maps (import path, source directory) to (complete or fake) package
 
 	// information collected during type-checking of a set of package files
@@ -85,11 +85,13 @@ type Checker struct {
 	files            []*ast.File                       // package files
 	unusedDotImports map[*Scope]map[*Package]token.Pos // positions of unused dot-imported packages for each file scope
 
-	firstErr   error                    // first error encountered
-	methods    map[*TypeName][]*Func    // maps package scope type names to associated non-blank, non-interface methods
+	firstErr error                 // first error encountered
+	methods  map[*TypeName][]*Func // maps package scope type names to associated non-blank, non-interface methods
+	// TODO(gri) move interfaces up to the group of fields persistent across check.Files invocations (see also comment in Checker.initFiles)
 	interfaces map[*TypeName]*ifaceInfo // maps interface type names to corresponding interface infos
 	untyped    map[ast.Expr]exprInfo    // map of expressions without final type
 	delayed    []func()                 // stack of delayed actions
+	objPath    []Object                 // path of object dependencies during type inference (for cycle reporting)
 
 	// context within which the current object is type-checked
 	// (valid only for the duration of type-checking a specific object)
@@ -144,6 +146,21 @@ func (check *Checker) later(f func()) {
 	check.delayed = append(check.delayed, f)
 }
 
+// push pushes obj onto the object path and returns its index in the path.
+func (check *Checker) push(obj Object) int {
+	check.objPath = append(check.objPath, obj)
+	return len(check.objPath) - 1
+}
+
+// pop pops and returns the topmost object from the object path.
+func (check *Checker) pop() Object {
+	i := len(check.objPath) - 1
+	obj := check.objPath[i]
+	check.objPath[i] = nil
+	check.objPath = check.objPath[:i]
+	return obj
+}
+
 // NewChecker returns a new Checker instance for a given package.
 // Package files may be added incrementally via checker.Files.
 func NewChecker(conf *Config, fset *token.FileSet, pkg *Package, info *Info) *Checker {
@@ -176,7 +193,15 @@ func (check *Checker) initFiles(files []*ast.File) {
 
 	check.firstErr = nil
 	check.methods = nil
-	check.interfaces = nil
+	// Don't clear the interfaces cache! It's important that we don't recompute
+	// ifaceInfos repeatedly (due to multiple check.Files calls) because when
+	// they are recomputed, they are not used in the context of their original
+	// declaration (because those types are already type-checked, typically) and
+	// then they will get the wrong receiver types, which matters for go/types
+	// clients. It is also safe to not reset the interfaces cache because files
+	// added to a package cannot change (add methods to) existing interface types;
+	// they can only add new interfaces. See also the respective comment in
+	// checker.infoFromTypeName (interfaces.go). Was bug - see issue #29029.
 	check.untyped = nil
 	check.delayed = nil
 
@@ -249,7 +274,7 @@ func (check *Checker) recordUntyped() {
 
 	for x, info := range check.untyped {
 		if debug && isTyped(info.typ) {
-			check.dump("%s: %s (type %s) is typed", x.Pos(), x, info.typ)
+			check.dump("%v: %s (type %s) is typed", x.Pos(), x, info.typ)
 			unreachable()
 		}
 		check.recordTypeAndValue(x, info.mode, info.typ, info.val)

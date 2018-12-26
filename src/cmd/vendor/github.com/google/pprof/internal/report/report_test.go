@@ -46,6 +46,7 @@ func TestSource(t *testing.T) {
 				&Options{
 					OutputFormat: List,
 					Symbol:       regexp.MustCompile(`.`),
+					TrimPath:     "/some/path",
 
 					SampleValue: sampleValue1,
 					SampleUnit:  testProfile.SampleType[1].Unit,
@@ -60,6 +61,7 @@ func TestSource(t *testing.T) {
 					OutputFormat: Dot,
 					CallTree:     true,
 					Symbol:       regexp.MustCompile(`.`),
+					TrimPath:     "/some/path",
 
 					SampleValue: sampleValue1,
 					SampleUnit:  testProfile.SampleType[1].Unit,
@@ -119,7 +121,7 @@ var testF = []*profile.Function{
 	{
 		ID:       4,
 		Name:     "tee",
-		Filename: "testdata/source2",
+		Filename: "/some/path/testdata/source2",
 	},
 }
 
@@ -251,16 +253,23 @@ func TestFunctionMap(t *testing.T) {
 		{Name: "fun2", File: "filename2"},
 	}
 
-	want := []profile.Function{
-		{ID: 1, Name: "fun1"},
-		{ID: 2, Name: "fun2", Filename: "filename"},
-		{ID: 1, Name: "fun1"},
-		{ID: 3, Name: "fun2", Filename: "filename2"},
+	want := []struct {
+		wantFunction profile.Function
+		wantAdded    bool
+	}{
+		{profile.Function{ID: 1, Name: "fun1"}, true},
+		{profile.Function{ID: 2, Name: "fun2", Filename: "filename"}, true},
+		{profile.Function{ID: 1, Name: "fun1"}, false},
+		{profile.Function{ID: 3, Name: "fun2", Filename: "filename2"}, true},
 	}
 
 	for i, tc := range nodes {
-		if got, want := fm.FindOrAdd(tc), want[i]; *got != want {
-			t.Errorf("%d: want %v, got %v", i, want, got)
+		gotFunc, gotAdded := fm.findOrAdd(tc)
+		if got, want := gotFunc, want[i].wantFunction; *got != want {
+			t.Errorf("%d: got %v, want %v", i, got, want)
+		}
+		if got, want := gotAdded, want[i].wantAdded; got != want {
+			t.Errorf("%d: got %v, want %v", i, got, want)
 		}
 	}
 }
@@ -283,5 +292,123 @@ func TestLegendActiveFilters(t *testing.T) {
 		if legendActiveFilter[i] != expectedLegendActiveFilter[i] {
 			t.Errorf("%d: want \"%v\", got \"%v\"", i, expectedLegendActiveFilter[i], legendActiveFilter[i])
 		}
+	}
+}
+
+func TestComputeTotal(t *testing.T) {
+	p1 := testProfile.Copy()
+	p1.Sample = []*profile.Sample{
+		{
+			Location: []*profile.Location{testL[0]},
+			Value:    []int64{1, 1},
+		},
+		{
+			Location: []*profile.Location{testL[2], testL[1], testL[0]},
+			Value:    []int64{1, 10},
+		},
+		{
+			Location: []*profile.Location{testL[4], testL[2], testL[0]},
+			Value:    []int64{1, 100},
+		},
+	}
+
+	p2 := testProfile.Copy()
+	p2.Sample = []*profile.Sample{
+		{
+			Location: []*profile.Location{testL[0]},
+			Value:    []int64{1, 1},
+		},
+		{
+			Location: []*profile.Location{testL[2], testL[1], testL[0]},
+			Value:    []int64{1, -10},
+		},
+		{
+			Location: []*profile.Location{testL[4], testL[2], testL[0]},
+			Value:    []int64{1, 100},
+		},
+	}
+
+	p3 := testProfile.Copy()
+	p3.Sample = []*profile.Sample{
+		{
+			Location: []*profile.Location{testL[0]},
+			Value:    []int64{10000, 1},
+		},
+		{
+			Location: []*profile.Location{testL[2], testL[1], testL[0]},
+			Value:    []int64{-10, 3},
+			Label:    map[string][]string{"pprof::base": {"true"}},
+		},
+		{
+			Location: []*profile.Location{testL[2], testL[1], testL[0]},
+			Value:    []int64{1000, -10},
+		},
+		{
+			Location: []*profile.Location{testL[2], testL[1], testL[0]},
+			Value:    []int64{-9000, 3},
+			Label:    map[string][]string{"pprof::base": {"true"}},
+		},
+		{
+			Location: []*profile.Location{testL[2], testL[1], testL[0]},
+			Value:    []int64{-1, 3},
+			Label:    map[string][]string{"pprof::base": {"true"}},
+		},
+		{
+			Location: []*profile.Location{testL[4], testL[2], testL[0]},
+			Value:    []int64{100, 100},
+		},
+		{
+			Location: []*profile.Location{testL[2], testL[1], testL[0]},
+			Value:    []int64{100, 3},
+			Label:    map[string][]string{"pprof::base": {"true"}},
+		},
+	}
+
+	testcases := []struct {
+		desc           string
+		prof           *profile.Profile
+		value, meanDiv func(v []int64) int64
+		wantTotal      int64
+	}{
+		{
+			desc: "no diff base, all positive values, index 1",
+			prof: p1,
+			value: func(v []int64) int64 {
+				return v[0]
+			},
+			wantTotal: 3,
+		},
+		{
+			desc: "no diff base, all positive values, index 2",
+			prof: p1,
+			value: func(v []int64) int64 {
+				return v[1]
+			},
+			wantTotal: 111,
+		},
+		{
+			desc: "no diff base, some negative values",
+			prof: p2,
+			value: func(v []int64) int64 {
+				return v[1]
+			},
+			wantTotal: 111,
+		},
+		{
+			desc: "diff base, some negative values",
+			prof: p3,
+			value: func(v []int64) int64 {
+				return v[0]
+			},
+			wantTotal: 9111,
+		},
+	}
+
+	for _, tc := range testcases {
+		t.Run(tc.desc, func(t *testing.T) {
+			if gotTotal := computeTotal(tc.prof, tc.value, tc.meanDiv); gotTotal != tc.wantTotal {
+				t.Errorf("got total %d, want %v", gotTotal, tc.wantTotal)
+			}
+		})
 	}
 }

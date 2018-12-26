@@ -22,8 +22,8 @@
 #define SYS_munmap               91
 #define SYS_setitimer           104
 #define SYS_clone               120
-#define SYS_select              142
 #define SYS_sched_yield         158
+#define SYS_nanosleep           162
 #define SYS_rt_sigreturn        173
 #define SYS_rt_sigaction        174
 #define SYS_rt_sigprocmask      175
@@ -31,9 +31,9 @@
 #define SYS_madvise             219
 #define SYS_mincore             218
 #define SYS_gettid              236
-#define SYS_tkill               237
 #define SYS_futex               238
 #define SYS_sched_getaffinity   240
+#define SYS_tgkill              241
 #define SYS_exit_group          248
 #define SYS_epoll_create        249
 #define SYS_epoll_ctl           250
@@ -110,17 +110,15 @@ TEXT runtime·usleep(SB),NOSPLIT,$16-4
 	MOVW	$1000000, R3
 	DIVD	R3, R2
 	MOVD	R2, 8(R15)
+	MOVW	$1000, R3
 	MULLD	R2, R3
 	SUB	R3, R4
 	MOVD	R4, 16(R15)
 
-	// select(0, 0, 0, 0, &tv)
-	MOVW	$0, R2
+	// nanosleep(&ts, 0)
+	ADD	$8, R15, R2
 	MOVW	$0, R3
-	MOVW	$0, R4
-	MOVW	$0, R5
-	ADD	$8, R15, R6
-	MOVW	$SYS_select, R1
+	MOVW	$SYS_nanosleep, R1
 	SYSCALL
 	RET
 
@@ -131,11 +129,15 @@ TEXT runtime·gettid(SB),NOSPLIT,$0-4
 	RET
 
 TEXT runtime·raise(SB),NOSPLIT|NOFRAME,$0
+	MOVW	$SYS_getpid, R1
+	SYSCALL
+	MOVW	R2, R10
 	MOVW	$SYS_gettid, R1
 	SYSCALL
-	MOVW	R2, R2	// arg 1 tid
-	MOVW	sig+0(FP), R3	// arg 2
-	MOVW	$SYS_tkill, R1
+	MOVW	R2, R3	// arg 2 tid
+	MOVW	R10, R2	// arg 1 pid
+	MOVW	sig+0(FP), R4	// arg 2
+	MOVW	$SYS_tgkill, R1
 	SYSCALL
 	RET
 
@@ -288,7 +290,7 @@ TEXT runtime·madvise(SB),NOSPLIT|NOFRAME,$0
 	MOVW	flags+16(FP), R4
 	MOVW	$SYS_madvise, R1
 	SYSCALL
-	// ignore failure - maybe pages are locked
+	MOVW	R2, ret+24(FP)
 	RET
 
 // int64 futex(int32 *uaddr, int32 op, int32 val,

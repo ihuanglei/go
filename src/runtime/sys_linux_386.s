@@ -39,6 +39,7 @@
 #define SYS_setittimer		104
 #define SYS_clone		120
 #define SYS_sched_yield 	158
+#define SYS_nanosleep		162
 #define SYS_rt_sigreturn	173
 #define SYS_rt_sigaction	174
 #define SYS_rt_sigprocmask	175
@@ -47,7 +48,6 @@
 #define SYS_mincore		218
 #define SYS_madvise		219
 #define SYS_gettid		224
-#define SYS_tkill		238
 #define SYS_futex		240
 #define SYS_sched_getaffinity	242
 #define SYS_set_thread_area	243
@@ -56,7 +56,7 @@
 #define SYS_epoll_ctl		255
 #define SYS_epoll_wait		256
 #define SYS_clock_gettime	265
-#define SYS_pselect6		308
+#define SYS_tgkill		270
 #define SYS_epoll_create1	329
 
 TEXT runtime·exit(SB),NOSPLIT,$0
@@ -141,14 +141,10 @@ TEXT runtime·usleep(SB),NOSPLIT,$8
 	MULL	DX
 	MOVL	AX, 4(SP)
 
-	// pselect6(0, 0, 0, 0, &ts, 0)
-	MOVL	$SYS_pselect6, AX
-	MOVL	$0, BX
+	// nanosleep(&ts, 0)
+	MOVL	$SYS_nanosleep, AX
+	LEAL	0(SP), BX
 	MOVL	$0, CX
-	MOVL	$0, DX
-	MOVL	$0, SI
-	LEAL	0(SP), DI
-	MOVL	$0, BP
 	INVOKE_SYSCALL
 	RET
 
@@ -159,11 +155,14 @@ TEXT runtime·gettid(SB),NOSPLIT,$0-4
 	RET
 
 TEXT runtime·raise(SB),NOSPLIT,$12
+	MOVL	$SYS_getpid, AX
+	INVOKE_SYSCALL
+	MOVL	AX, BX	// arg 1 pid
 	MOVL	$SYS_gettid, AX
 	INVOKE_SYSCALL
-	MOVL	AX, BX	// arg 1 tid
-	MOVL	sig+0(FP), CX	// arg 2 signal
-	MOVL	$SYS_tkill, AX
+	MOVL	AX, CX	// arg 2 tid
+	MOVL	sig+0(FP), DX	// arg 3 signal
+	MOVL	$SYS_tgkill, AX
 	INVOKE_SYSCALL
 	RET
 
@@ -428,7 +427,7 @@ TEXT runtime·madvise(SB),NOSPLIT,$0
 	MOVL	n+4(FP), CX
 	MOVL	flags+8(FP), DX
 	INVOKE_SYSCALL
-	// ignore failure - maybe pages are locked
+	MOVL	AX, ret+12(FP)
 	RET
 
 // int32 futex(int32 *uaddr, int32 op, int32 val,

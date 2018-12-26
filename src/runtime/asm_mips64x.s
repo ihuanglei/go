@@ -292,9 +292,6 @@ TEXT runtime·morestack_noctxt(SB),NOSPLIT|NOFRAME,$0-0
 	JMP	(R4)
 // Note: can't just "BR NAME(SB)" - bad inlining results.
 
-TEXT reflect·call(SB), NOSPLIT, $0-0
-	JMP	·reflectcall(SB)
-
 TEXT ·reflectcall(SB), NOSPLIT|NOFRAME, $0-32
 	MOVWU argsize+24(FP), R1
 	DISPATCH(runtime·call32, 32)
@@ -606,11 +603,6 @@ TEXT runtime·setg(SB), NOSPLIT, $0-8
 TEXT setg_gcc<>(SB),NOSPLIT,$0-0
 	MOVV	R1, g
 	JAL	runtime·save_g(SB)
-	RET
-
-TEXT runtime·getcallerpc(SB),NOSPLIT|NOFRAME,$0-8
-	MOVV	0(R29), R1		// LR saved by caller
-	MOVV	R1, ret+0(FP)
 	RET
 
 TEXT runtime·abort(SB),NOSPLIT|NOFRAME,$0-0

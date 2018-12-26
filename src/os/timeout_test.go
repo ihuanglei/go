@@ -3,6 +3,7 @@
 // license that can be found in the LICENSE file.
 
 // +build !nacl
+// +build !js
 // +build !plan9
 // +build !windows
 
@@ -15,8 +16,10 @@ import (
 	"io/ioutil"
 	"math/rand"
 	"os"
+	"os/signal"
 	"runtime"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -590,6 +593,10 @@ func TestRacyWrite(t *testing.T) {
 
 // Closing a TTY while reading from it should not hang.  Issue 23943.
 func TestTTYClose(t *testing.T) {
+	// Ignore SIGTTIN in case we are running in the background.
+	signal.Ignore(syscall.SIGTTIN)
+	defer signal.Reset(syscall.SIGTTIN)
+
 	f, err := os.Open("/dev/tty")
 	if err != nil {
 		t.Skipf("skipping because opening /dev/tty failed: %v", err)

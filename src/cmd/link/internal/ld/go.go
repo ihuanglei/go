@@ -11,6 +11,7 @@ import (
 	"cmd/internal/bio"
 	"cmd/internal/objabi"
 	"cmd/link/internal/sym"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -22,6 +23,17 @@ import (
 // replace all "". with pkg.
 func expandpkg(t0 string, pkg string) string {
 	return strings.Replace(t0, `"".`, pkg+".", -1)
+}
+
+func resolveABIAlias(s *sym.Symbol) *sym.Symbol {
+	if s.Type != sym.SABIALIAS {
+		return s
+	}
+	target := s.R[0].Sym
+	if target.Type == sym.SABIALIAS {
+		panic(fmt.Sprintf("ABI alias %s references another ABI alias %s", s, target))
+	}
+	return target
 }
 
 // TODO:
@@ -104,28 +116,18 @@ func ldpkg(ctxt *Link, f *bio.Reader, lib *sym.Library, length int64, filename s
 }
 
 func loadcgo(ctxt *Link, file string, pkg string, p string) {
-	var next string
-	var q string
-	var lib string
-	var s *sym.Symbol
+	var directives [][]string
+	if err := json.NewDecoder(strings.NewReader(p)).Decode(&directives); err != nil {
+		fmt.Fprintf(os.Stderr, "%s: %s: failed decoding cgo directives: %v\n", os.Args[0], file, err)
+		nerrors++
+		return
+	}
 
-	p0 := ""
-	for ; p != ""; p = next {
-		if i := strings.Index(p, "\n"); i >= 0 {
-			p, next = p[:i], p[i+1:]
-		} else {
-			next = ""
-		}
-
-		p0 = p // save for error message
-		f := tokenize(p)
-		if len(f) == 0 {
-			continue
-		}
-
-		if f[0] == "cgo_import_dynamic" {
+	for _, f := range directives {
+		switch f[0] {
+		case "cgo_import_dynamic":
 			if len(f) < 2 || len(f) > 4 {
-				goto err
+				break
 			}
 
 			local := f[1]
@@ -133,7 +135,7 @@ func loadcgo(ctxt *Link, file string, pkg string, p string) {
 			if len(f) > 2 {
 				remote = f[2]
 			}
-			lib = ""
+			lib := ""
 			if len(f) > 3 {
 				lib = f[3]
 			}
@@ -158,15 +160,15 @@ func loadcgo(ctxt *Link, file string, pkg string, p string) {
 			}
 
 			local = expandpkg(local, pkg)
-			q = ""
+			q := ""
 			if i := strings.Index(remote, "#"); i >= 0 {
 				remote, q = remote[:i], remote[i+1:]
 			}
-			s = ctxt.Syms.Lookup(local, 0)
+			s := ctxt.Syms.Lookup(local, 0)
 			if s.Type == 0 || s.Type == sym.SXREF || s.Type == sym.SHOSTOBJ {
-				s.Dynimplib = lib
-				s.Extname = remote
-				s.Dynimpvers = q
+				s.SetDynimplib(lib)
+				s.SetExtname(remote)
+				s.SetDynimpvers(q)
 				if s.Type != sym.SHOSTOBJ {
 					s.Type = sym.SDYNIMPORT
 				}
@@ -174,32 +176,35 @@ func loadcgo(ctxt *Link, file string, pkg string, p string) {
 			}
 
 			continue
-		}
 
-		if f[0] == "cgo_import_static" {
+		case "cgo_import_static":
 			if len(f) != 2 {
-				goto err
+				break
 			}
 			local := f[1]
-			s = ctxt.Syms.Lookup(local, 0)
+
+			s := ctxt.Syms.Lookup(local, 0)
 			s.Type = sym.SHOSTOBJ
 			s.Size = 0
 			continue
-		}
 
-		if f[0] == "cgo_export_static" || f[0] == "cgo_export_dynamic" {
+		case "cgo_export_static", "cgo_export_dynamic":
 			if len(f) < 2 || len(f) > 3 {
-				goto err
+				break
 			}
 			local := f[1]
-			var remote string
+			remote := local
 			if len(f) > 2 {
 				remote = f[2]
-			} else {
-				remote = local
 			}
 			local = expandpkg(local, pkg)
-			s = ctxt.Syms.Lookup(local, 0)
+
+			// The compiler arranges for an ABI0 wrapper
+			// to be available for all cgo-exported
+			// functions. Link.loadlib will resolve any
+			// ABI aliases we find here (since we may not
+			// yet know it's an alias).
+			s := ctxt.Syms.Lookup(local, 0)
 
 			switch ctxt.BuildMode {
 			case BuildModeCShared, BuildModeCArchive, BuildModePlugin:
@@ -210,18 +215,17 @@ func loadcgo(ctxt *Link, file string, pkg string, p string) {
 
 			// export overrides import, for openbsd/cgo.
 			// see issue 4878.
-			if s.Dynimplib != "" {
-				s.Dynimplib = ""
-				s.Extname = ""
-				s.Dynimpvers = ""
+			if s.Dynimplib() != "" {
+				s.ResetDyninfo()
+				s.SetExtname("")
 				s.Type = 0
 			}
 
 			if !s.Attr.CgoExport() {
-				s.Extname = remote
+				s.SetExtname(remote)
 				dynexp = append(dynexp, s)
-			} else if s.Extname != remote {
-				fmt.Fprintf(os.Stderr, "%s: conflicting cgo_export directives: %s as %s and %s\n", os.Args[0], s.Name, s.Extname, remote)
+			} else if s.Extname() != remote {
+				fmt.Fprintf(os.Stderr, "%s: conflicting cgo_export directives: %s as %s and %s\n", os.Args[0], s.Name, s.Extname(), remote)
 				nerrors++
 				return
 			}
@@ -232,11 +236,10 @@ func loadcgo(ctxt *Link, file string, pkg string, p string) {
 				s.Attr |= sym.AttrCgoExportDynamic
 			}
 			continue
-		}
 
-		if f[0] == "cgo_dynamic_linker" {
+		case "cgo_dynamic_linker":
 			if len(f) != 2 {
-				goto err
+				break
 			}
 
 			if *flagInterpreter == "" {
@@ -248,24 +251,19 @@ func loadcgo(ctxt *Link, file string, pkg string, p string) {
 
 				interpreter = f[1]
 			}
-
 			continue
-		}
 
-		if f[0] == "cgo_ldflag" {
+		case "cgo_ldflag":
 			if len(f) != 2 {
-				goto err
+				break
 			}
 			ldflag = append(ldflag, f[1])
 			continue
 		}
+
+		fmt.Fprintf(os.Stderr, "%s: %s: invalid cgo directive: %q\n", os.Args[0], file, f)
+		nerrors++
 	}
-
-	return
-
-err:
-	fmt.Fprintf(os.Stderr, "%s: %s: invalid dynimport line: %s\n", os.Args[0], file, p0)
-	nerrors++
 }
 
 var seenlib = make(map[string]bool)
@@ -295,7 +293,7 @@ func Adddynsym(ctxt *Link, s *sym.Symbol) {
 	if ctxt.IsELF {
 		elfadddynsym(ctxt, s)
 	} else if ctxt.HeadType == objabi.Hdarwin {
-		Errorf(s, "adddynsym: missed symbol (Extname=%s)", s.Extname)
+		Errorf(s, "adddynsym: missed symbol (Extname=%s)", s.Extname())
 	} else if ctxt.HeadType == objabi.Hwindows {
 		// already taken care of
 	} else {
@@ -312,7 +310,7 @@ func fieldtrack(ctxt *Link) {
 			s.Attr |= sym.AttrNotInSymbolTable
 			if s.Attr.Reachable() {
 				buf.WriteString(s.Name[9:])
-				for p := s.Reachparent; p != nil; p = p.Reachparent {
+				for p := ctxt.Reachparent[s]; p != nil; p = ctxt.Reachparent[p] {
 					buf.WriteString("\t")
 					buf.WriteString(p.Name)
 				}
@@ -336,7 +334,8 @@ func fieldtrack(ctxt *Link) {
 }
 
 func (ctxt *Link) addexport() {
-	if ctxt.HeadType == objabi.Hdarwin {
+	// TODO(aix)
+	if ctxt.HeadType == objabi.Hdarwin || ctxt.HeadType == objabi.Haix {
 		return
 	}
 

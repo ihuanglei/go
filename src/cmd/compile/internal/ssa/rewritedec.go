@@ -3,11 +3,13 @@
 
 package ssa
 
+import "fmt"
 import "math"
 import "cmd/internal/obj"
 import "cmd/internal/objabi"
 import "cmd/compile/internal/types"
 
+var _ = fmt.Println   // in case not otherwise used
 var _ = math.MinInt8  // in case not otherwise used
 var _ = obj.ANOP      // in case not otherwise used
 var _ = objabi.GOROOT // in case not otherwise used
@@ -198,7 +200,7 @@ func rewriteValuedec_OpLoad_0(v *Value) bool {
 	}
 	// match: (Load <t> ptr mem)
 	// cond: t.IsSlice()
-	// result: (SliceMake (Load <t.ElemType().PtrTo()> ptr mem) (Load <typ.Int> (OffPtr <typ.IntPtr> [config.PtrSize] ptr) mem) (Load <typ.Int> (OffPtr <typ.IntPtr> [2*config.PtrSize] ptr) mem))
+	// result: (SliceMake (Load <t.Elem().PtrTo()> ptr mem) (Load <typ.Int> (OffPtr <typ.IntPtr> [config.PtrSize] ptr) mem) (Load <typ.Int> (OffPtr <typ.IntPtr> [2*config.PtrSize] ptr) mem))
 	for {
 		t := v.Type
 		_ = v.Args[1]
@@ -208,7 +210,7 @@ func rewriteValuedec_OpLoad_0(v *Value) bool {
 			break
 		}
 		v.reset(OpSliceMake)
-		v0 := b.NewValue0(v.Pos, OpLoad, t.ElemType().PtrTo())
+		v0 := b.NewValue0(v.Pos, OpLoad, t.Elem().PtrTo())
 		v0.AddArg(ptr)
 		v0.AddArg(mem)
 		v.AddArg(v0)

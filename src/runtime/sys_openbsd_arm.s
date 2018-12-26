@@ -24,15 +24,7 @@ TEXT runtime·exit(SB),NOSPLIT|NOFRAME,$0
 
 // func exitThread(wait *uint32)
 TEXT runtime·exitThread(SB),NOSPLIT,$0-4
-	MOVW	wait+0(FP), R0
-	// We're done using the stack.
-	MOVW	$0, R2
-storeloop:
-	LDREX	(R0), R4          // loads R4
-	STREX	R2, (R0), R1      // stores R2
-	CMP	$0, R1
-	BNE	storeloop
-	MOVW	$0, R0			// arg 1 - notdead
+	MOVW	wait+0(FP), R0		// arg 1 - notdead
 	MOVW	$302, R12		// sys___threxit
 	SWI	$0
 	MOVW.CS	$1, R8			// crash on syscall failure
@@ -151,8 +143,8 @@ TEXT runtime·madvise(SB),NOSPLIT,$0
 	MOVW	flags+8(FP), R2		// arg 2 - flags
 	MOVW	$75, R12		// sys_madvise
 	SWI	$0
-	MOVW.CS	$0, R8			// crash on syscall failure
-	MOVW.CS	R8, (R8)
+	MOVW.CS	$-1, R0
+	MOVW	R0, ret+12(FP)
 	RET
 
 TEXT runtime·setitimer(SB),NOSPLIT,$0
@@ -379,8 +371,9 @@ TEXT runtime·closeonexec(SB),NOSPLIT,$0
 TEXT ·publicationBarrier(SB),NOSPLIT|NOFRAME,$0-0
 	B	runtime·armPublicationBarrier(SB)
 
-// TODO(jsing): Implement.
 TEXT runtime·read_tls_fallback(SB),NOSPLIT|NOFRAME,$0
-	MOVW	$5, R0
-	MOVW	R0, (R0)
+	MOVM.WP	[R1, R2, R3, R12], (R13)
+	MOVW	$330, R12		// sys___get_tcb
+	SWI	$0
+	MOVM.IAW (R13), [R1, R2, R3, R12]
 	RET

@@ -171,7 +171,8 @@ func openFileNolog(name string, flag int, perm FileMode) (*File, error) {
 }
 
 // Close closes the File, rendering it unusable for I/O.
-// It returns an error, if any.
+// On files that support SetDeadline, any pending I/O operations will
+// be canceled and return immediately with an error.
 func (file *File) Close() error {
 	if file == nil {
 		return ErrInvalid
@@ -324,7 +325,10 @@ func tempDir() string {
 		if n > uint32(len(b)) {
 			continue
 		}
-		if n > 0 && b[n-1] == '\\' {
+		if n == 3 && b[1] == ':' && b[2] == '\\' {
+			// Do nothing for path, like C:\.
+		} else if n > 0 && b[n-1] == '\\' {
+			// Otherwise remove terminating \.
 			n--
 		}
 		return string(utf16.Decode(b[:n]))
@@ -355,13 +359,13 @@ func Symlink(oldname, newname string) error {
 	// '/' does not work in link's content
 	oldname = fromSlash(oldname)
 
-	// need the exact location of the oldname when its relative to determine if its a directory
+	// need the exact location of the oldname when it's relative to determine if it's a directory
 	destpath := oldname
 	if !isAbs(oldname) {
 		destpath = dirname(newname) + `\` + oldname
 	}
 
-	fi, err := Lstat(destpath)
+	fi, err := Stat(destpath)
 	isdir := err == nil && fi.IsDir()
 
 	n, err := syscall.UTF16PtrFromString(fixLongPath(newname))
@@ -373,11 +377,20 @@ func Symlink(oldname, newname string) error {
 		return &LinkError{"symlink", oldname, newname, err}
 	}
 
-	var flags uint32
+	var flags uint32 = windows.SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE
 	if isdir {
 		flags |= syscall.SYMBOLIC_LINK_FLAG_DIRECTORY
 	}
 	err = syscall.CreateSymbolicLink(n, o, flags)
+
+	if err != nil {
+		// the unprivileged create flag is unsupported
+		// below Windows 10 (1703, v10.0.14972). retry without it.
+		flags &^= windows.SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE
+
+		err = syscall.CreateSymbolicLink(n, o, flags)
+	}
+
 	if err != nil {
 		return &LinkError{"symlink", oldname, newname, err}
 	}

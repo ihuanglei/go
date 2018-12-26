@@ -550,7 +550,7 @@ label1:
 //	ftsqrt	BF, FRB
 	FTSQRT	F2,$7
 
-//	FCFID	
+//	FCFID
 //	FCFIDS
 
 	FCFID	F2,F3
@@ -814,6 +814,23 @@ label1:
 	VADDEUQM V4, V3, V2, V1
 	VADDECUQ V4, V3, V2, V1
 
+//	Vector multiply, VX-form
+//	<MNEMONIC>  VRA,VRB,VRT produces
+//	<mnemonic>  VRT,VRA,VRB
+	VMULESB V2, V3, V1
+	VMULOSB V2, V3, V1
+	VMULEUB V2, V3, V1
+	VMULOUB V2, V3, V1
+	VMULESH V2, V3, V1
+	VMULOSH V2, V3, V1
+	VMULEUH V2, V3, V1
+	VMULOUH V2, V3, V1
+	VMULESW V2, V3, V1
+	VMULOSW V2, V3, V1
+	VMULEUW V2, V3, V1
+	VMULOUW V2, V3, V1
+	VMULUWM V2, V3, V1
+
 //	Vector polynomial multiply-sum, VX-form
 //	<MNEMONIC>  VRA,VRB,VRT produces
 //	<mnemonic>  VRT,VRA,VRB
@@ -931,6 +948,7 @@ label1:
 //	<MNEMONIC> VRA,VRB,VRC,VRT produces
 //	<mnemonic> VRT,VRA,VRB,VRC
 	VPERM V3, V2, V1, V0
+	VPERMXOR V3, V2, V1, V0
 
 //	Vector bit permute, VX-form
 //	<MNEMONIC> VRA,VRB,VRT produces

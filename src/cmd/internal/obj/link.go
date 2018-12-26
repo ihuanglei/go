@@ -138,13 +138,16 @@ import (
 //			offset = second register
 //
 //	[reg, reg, reg-reg]
-//		Register list for ARM and ARM64.
+//		Register list for ARM, ARM64, 386/AMD64.
 //		Encoding:
 //			type = TYPE_REGLIST
 //		On ARM:
 //			offset = bit mask of registers in list; R0 is low bit.
 //		On ARM64:
 //			offset = register count (Q:size) | arrangement (opcode) | first register
+//		On 386/AMD64:
+//			reg = range low register
+//			offset = 2 packed registers + kind tag (see x86.EncodeRegisterRange)
 //
 //	reg, reg
 //		Register pair for ARM.
@@ -211,6 +214,8 @@ const (
 	// Indicates auto that was optimized away, but whose type
 	// we want to preserve in the DWARF debug info.
 	NAME_DELETED_AUTO
+	// Indicates that this is a reference to a TOC anchor.
+	NAME_TOCREF
 )
 
 //go:generate stringer -type AddrType
@@ -282,7 +287,7 @@ type Prog struct {
 	RegTo2   int16    // 2nd destination operand
 	Mark     uint16   // bitmask of arch-specific items
 	Optab    uint16   // arch-specific opcode index
-	Scond    uint8    // condition bits for conditional instruction (e.g., on ARM)
+	Scond    uint8    // bits that describe instruction suffixes (e.g. ARM conditions)
 	Back     uint8    // for x86 back end: backwards branch state
 	Ft       uint8    // for x86 back end: type index of Prog.From
 	Tt       uint8    // for x86 back end: type index of Prog.To
@@ -341,8 +346,10 @@ const (
 	AFUNCDATA
 	AJMP
 	ANOP
+	APCALIGN
 	APCDATA
 	ARET
+	AGETCALLERPC
 	ATEXT
 	AUNDEF
 	A_ARCHSPECIFIC
@@ -363,6 +370,7 @@ const (
 	ABaseARM64
 	ABaseMIPS
 	ABaseS390X
+	ABaseWasm
 
 	AllowedOpCodes = 1 << 11            // The number of opcodes available for any given architecture.
 	AMask          = AllowedOpCodes - 1 // AND with this to use the opcode as an array index.
@@ -395,13 +403,38 @@ type FuncInfo struct {
 	dwarfLocSym    *LSym
 	dwarfRangesSym *LSym
 	dwarfAbsFnSym  *LSym
+	dwarfIsStmtSym *LSym
 
-	GCArgs   LSym
-	GCLocals LSym
+	GCArgs       *LSym
+	GCLocals     *LSym
+	GCRegs       *LSym
+	StackObjects *LSym
 }
 
+//go:generate stringer -type ABI
+
+// ABI is the calling convention of a text symbol.
+type ABI uint8
+
+const (
+	// ABI0 is the stable stack-based ABI. It's important that the
+	// value of this is "0": we can't distinguish between
+	// references to data and ABI0 text symbols in assembly code,
+	// and hence this doesn't distinguish between symbols without
+	// an ABI and text symbols with ABI0.
+	ABI0 ABI = iota
+
+	// ABIInternal is the internal ABI that may change between Go
+	// versions. All Go functions use the internal ABI and the
+	// compiler generates wrappers for calls to and from other
+	// ABIs.
+	ABIInternal
+
+	ABICount
+)
+
 // Attribute is a set of symbol attributes.
-type Attribute int16
+type Attribute uint16
 
 const (
 	AttrDuplicateOK Attribute = 1 << iota
@@ -437,6 +470,13 @@ const (
 	// For function symbols; indicates that the specified function was the
 	// target of an inline during compilation
 	AttrWasInlined
+
+	// attrABIBase is the value at which the ABI is encoded in
+	// Attribute. This must be last; all bits after this are
+	// assumed to be an ABI value.
+	//
+	// MUST BE LAST since all bits above this comprise the ABI.
+	attrABIBase
 )
 
 func (a Attribute) DuplicateOK() bool   { return a&AttrDuplicateOK != 0 }
@@ -460,6 +500,12 @@ func (a *Attribute) Set(flag Attribute, value bool) {
 	} else {
 		*a &^= flag
 	}
+}
+
+func (a Attribute) ABI() ABI { return ABI(a / attrABIBase) }
+func (a *Attribute) SetABI(abi ABI) {
+	const mask = 1 // Only one ABI bit for now.
+	*a = (*a &^ (mask * attrABIBase)) | Attribute(abi)*attrABIBase
 }
 
 var textAttrStrings = [...]struct {
@@ -492,6 +538,12 @@ func (a Attribute) TextAttrString() string {
 			}
 			a &^= x.bit
 		}
+	}
+	switch a.ABI() {
+	case ABI0:
+	case ABIInternal:
+		s += "ABIInternal|"
+		a.SetABI(0) // Clear ABI so we don't print below.
 	}
 	if a != 0 {
 		s += fmt.Sprintf("UnknownAttribute(%d)|", a)
@@ -547,7 +599,7 @@ type Pcdata struct {
 type Link struct {
 	Headtype           objabi.HeadType
 	Arch               *LinkArch
-	Debugasm           bool
+	Debugasm           int
 	Debugvlog          bool
 	Debugpcln          string
 	Flag_shared        bool
@@ -575,6 +627,16 @@ type Link struct {
 	// state for writing objects
 	Text []*LSym
 	Data []*LSym
+
+	// ABIAliases are text symbols that should be aliased to all
+	// ABIs. These symbols may only be referenced and not defined
+	// by this object, since the need for an alias may appear in a
+	// different object than the definition. Hence, this
+	// information can't be carried in the symbol definition.
+	//
+	// TODO(austin): Replace this with ABI wrappers once the ABIs
+	// actually diverge.
+	ABIAliases []*LSym
 }
 
 func (ctxt *Link) Diag(format string, args ...interface{}) {
@@ -593,7 +655,7 @@ func (ctxt *Link) Logf(format string, args ...interface{}) {
 // the hardware stack pointer and the local variable area.
 func (ctxt *Link) FixedFrameSize() int64 {
 	switch ctxt.Arch.Family {
-	case sys.AMD64, sys.I386:
+	case sys.AMD64, sys.I386, sys.Wasm:
 		return 0
 	case sys.PPC64:
 		// PIC code on ppc64le requires 32 bytes of stack, and it's easier to
