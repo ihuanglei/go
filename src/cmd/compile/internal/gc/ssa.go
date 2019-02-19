@@ -84,6 +84,7 @@ func initssaconfig() {
 	panicnildottype = sysfunc("panicnildottype")
 	panicoverflow = sysfunc("panicoverflow")
 	panicslice = sysfunc("panicslice")
+	panicshift = sysfunc("panicshift")
 	raceread = sysfunc("raceread")
 	racereadrange = sysfunc("racereadrange")
 	racewrite = sysfunc("racewrite")
@@ -106,7 +107,7 @@ func initssaconfig() {
 	WasmDiv = sysvar("wasmDiv")
 	WasmTruncS = sysvar("wasmTruncS")
 	WasmTruncU = sysvar("wasmTruncU")
-	SigPanic = sysvar("sigpanic")
+	SigPanic = sysfunc("sigpanic")
 }
 
 // buildssa builds an SSA function for fn.
@@ -1204,6 +1205,9 @@ func (s *state) stmt(n *Node) {
 		p := s.expr(n.Left)
 		s.nilCheck(p)
 
+	case OINLMARK:
+		s.newValue1I(ssa.OpInlMark, types.TypeVoid, n.Xoffset, s.mem())
+
 	default:
 		s.Fatalf("unhandled stmt %v", n.Op)
 	}
@@ -2125,7 +2129,13 @@ func (s *state) expr(n *Node) *ssa.Value {
 	case OLSH, ORSH:
 		a := s.expr(n.Left)
 		b := s.expr(n.Right)
-		return s.newValue2(s.ssaShiftOp(n.Op, n.Type, n.Right.Type), a.Type, a, b)
+		bt := b.Type
+		if bt.IsSigned() {
+			cmp := s.newValue2(s.ssaOp(OGE, bt), types.Types[TBOOL], b, s.zeroVal(bt))
+			s.check(cmp, panicshift)
+			bt = bt.ToUnsigned()
+		}
+		return s.newValue2(s.ssaShiftOp(n.Op, n.Type, bt), a.Type, a, b)
 	case OANDAND, OOROR:
 		// To implement OANDAND (and OOROR), we introduce a
 		// new temporary variable to hold the result. The
@@ -5163,6 +5173,14 @@ func genssa(f *ssa.Func, pp *Progs) {
 				if v.Args[0].Reg() != v.Reg() {
 					v.Fatalf("OpConvert should be a no-op: %s; %s", v.Args[0].LongString(), v.LongString())
 				}
+			case ssa.OpInlMark:
+				p := thearch.Ginsnop(s.pp)
+				if pp.curfn.Func.lsym != nil {
+					// lsym is nil if the function name is "_".
+					pp.curfn.Func.lsym.Func.AddInlMark(p, v.AuxInt32())
+				}
+				// TODO: if matching line number, merge somehow with previous instruction?
+
 			default:
 				// let the backend handle it
 				// Special case for first line in function; move it to the start.
@@ -5543,6 +5561,7 @@ func (s *SSAGenState) Call(v *ssa.Value) *obj.Prog {
 	s.PrepareCall(v)
 
 	p := s.Prog(obj.ACALL)
+	p.Pos = v.Pos
 	if sym, ok := v.Aux.(*obj.LSym); ok {
 		p.To.Type = obj.TYPE_MEM
 		p.To.Name = obj.NAME_EXTERN

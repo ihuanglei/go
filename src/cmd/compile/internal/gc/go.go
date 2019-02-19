@@ -257,7 +257,7 @@ type Arch struct {
 
 	PadFrame  func(int64) int64
 	ZeroRange func(*Progs, *obj.Prog, int64, int64, *uint32) *obj.Prog
-	Ginsnop   func(*Progs)
+	Ginsnop   func(*Progs) *obj.Prog
 
 	// SSAMarkMoves marks any MOVXconst ops that need to avoid clobbering flags.
 	SSAMarkMoves func(*SSAGenState, *ssa.Block)
@@ -296,6 +296,7 @@ var (
 	msanwrite,
 	newproc,
 	panicdivide,
+	panicshift,
 	panicdottypeE,
 	panicdottypeI,
 	panicindex,

@@ -1374,35 +1374,40 @@ func TestWalkSymlink(t *testing.T) {
 }
 
 func TestIssue29372(t *testing.T) {
-	f, err := ioutil.TempFile("", "issue29372")
+	tmpDir, err := ioutil.TempDir("", "TestIssue29372")
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.Close()
-	path := f.Name()
-	defer os.Remove(path)
+	defer os.RemoveAll(tmpDir)
 
-	isWin := runtime.GOOS == "windows"
+	if runtime.GOOS == "windows" {
+		// This test is broken on windows, if temporary directory
+		// is a symlink. See issue 29746.
+		// TODO(brainman): Remove this hack once issue #29746 is fixed.
+		tmpDir, err = filepath.EvalSymlinks(tmpDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	path := filepath.Join(tmpDir, "file.txt")
+	err = ioutil.WriteFile(path, nil, 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	pathSeparator := string(filepath.Separator)
-	tests := []struct {
-		path string
-		skip bool
-	}{
-		{path + strings.Repeat(pathSeparator, 1), false},
-		{path + strings.Repeat(pathSeparator, 2), false},
-		{path + strings.Repeat(pathSeparator, 1) + ".", false},
-		{path + strings.Repeat(pathSeparator, 2) + ".", false},
-		// windows.GetFinalPathNameByHandle return the directory part with trailing dot dot
-		// C:\path\to\existing_dir\existing_file\.. returns C:\path\to\existing_dir
-		{path + strings.Repeat(pathSeparator, 1) + "..", isWin},
-		{path + strings.Repeat(pathSeparator, 2) + "..", isWin},
+	tests := []string{
+		path + strings.Repeat(pathSeparator, 1),
+		path + strings.Repeat(pathSeparator, 2),
+		path + strings.Repeat(pathSeparator, 1) + ".",
+		path + strings.Repeat(pathSeparator, 2) + ".",
+		path + strings.Repeat(pathSeparator, 1) + "..",
+		path + strings.Repeat(pathSeparator, 2) + "..",
 	}
 
 	for i, test := range tests {
-		if test.skip {
-			continue
-		}
-		_, err = filepath.EvalSymlinks(test.path)
+		_, err = filepath.EvalSymlinks(test)
 		if err != syscall.ENOTDIR {
 			t.Fatalf("test#%d: want %q, got %q", i, syscall.ENOTDIR, err)
 		}
