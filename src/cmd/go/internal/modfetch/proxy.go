@@ -6,33 +6,32 @@ package modfetch
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net/url"
 	"os"
+	pathpkg "path"
+	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"time"
+	"unicode"
 
 	"cmd/go/internal/base"
+	"cmd/go/internal/cfg"
 	"cmd/go/internal/modfetch/codehost"
 	"cmd/go/internal/module"
 	"cmd/go/internal/semver"
+	"cmd/go/internal/web"
 )
 
 var HelpGoproxy = &base.Command{
 	UsageLine: "goproxy",
 	Short:     "module proxy protocol",
 	Long: `
-The go command by default downloads modules from version control systems
-directly, just as 'go get' always has. The GOPROXY environment variable allows
-further control over the download source. If GOPROXY is unset, is the empty string,
-or is the string "direct", downloads use the default direct connection to version
-control systems. Setting GOPROXY to "off" disallows downloading modules from
-any source. Otherwise, GOPROXY is expected to be the URL of a module proxy,
-in which case the go command will fetch all modules from that proxy.
-No matter the source of the modules, downloaded modules must match existing
-entries in go.sum (see 'go help modules' for discussion of verification).
-
 A Go module proxy is any web server that can respond to GET requests for
 URLs of a specified form. The requests have no query parameters, so even
 a site serving from a fixed file system (including a file:/// URL)
@@ -85,40 +84,153 @@ cached module versions with GOPROXY=https://example.com/proxy.
 `,
 }
 
-var proxyURL = os.Getenv("GOPROXY")
+var proxyOnce struct {
+	sync.Once
+	list []string
+	err  error
+}
 
-func lookupProxy(path string) (Repo, error) {
-	if strings.Contains(proxyURL, ",") {
-		return nil, fmt.Errorf("invalid $GOPROXY setting: cannot have comma")
+func proxyURLs() ([]string, error) {
+	proxyOnce.Do(func() {
+		if cfg.GONOPROXY != "" && cfg.GOPROXY != "direct" {
+			proxyOnce.list = append(proxyOnce.list, "noproxy")
+		}
+		for _, proxyURL := range strings.Split(cfg.GOPROXY, ",") {
+			proxyURL = strings.TrimSpace(proxyURL)
+			if proxyURL == "" {
+				continue
+			}
+			if proxyURL == "off" {
+				// "off" always fails hard, so can stop walking list.
+				proxyOnce.list = append(proxyOnce.list, "off")
+				break
+			}
+			if proxyURL == "direct" {
+				proxyOnce.list = append(proxyOnce.list, "direct")
+				// For now, "direct" is the end of the line. We may decide to add some
+				// sort of fallback behavior for them in the future, so ignore
+				// subsequent entries for forward-compatibility.
+				break
+			}
+
+			// Check that newProxyRepo accepts the URL.
+			// It won't do anything with the path.
+			_, err := newProxyRepo(proxyURL, "golang.org/x/text")
+			if err != nil {
+				proxyOnce.err = err
+				return
+			}
+			proxyOnce.list = append(proxyOnce.list, proxyURL)
+		}
+	})
+
+	return proxyOnce.list, proxyOnce.err
+}
+
+// TryProxies iterates f over each configured proxy (including "noproxy" and
+// "direct" if applicable) until f returns an error that is not
+// equivalent to os.ErrNotExist.
+//
+// TryProxies then returns that final error.
+//
+// If GOPROXY is set to "off", TryProxies invokes f once with the argument
+// "off".
+func TryProxies(f func(proxy string) error) error {
+	proxies, err := proxyURLs()
+	if err != nil {
+		return err
 	}
-	u, err := url.Parse(proxyURL)
-	if err != nil || u.Scheme != "http" && u.Scheme != "https" && u.Scheme != "file" {
-		// Don't echo $GOPROXY back in case it has user:password in it (sigh).
-		return nil, fmt.Errorf("invalid $GOPROXY setting: malformed URL or invalid scheme (must be http, https, file)")
+	if len(proxies) == 0 {
+		return f("off")
 	}
-	return newProxyRepo(u.String(), path)
+
+	for _, proxy := range proxies {
+		err = f(proxy)
+		if !errors.Is(err, os.ErrNotExist) {
+			break
+		}
+	}
+	return err
 }
 
 type proxyRepo struct {
-	url  string
+	url  *url.URL
 	path string
 }
 
 func newProxyRepo(baseURL, path string) (Repo, error) {
+	base, err := url.Parse(baseURL)
+	if err != nil {
+		return nil, err
+	}
+	switch base.Scheme {
+	case "http", "https":
+		// ok
+	case "file":
+		if *base != (url.URL{Scheme: base.Scheme, Path: base.Path, RawPath: base.RawPath}) {
+			return nil, fmt.Errorf("invalid file:// proxy URL with non-path elements: %s", web.Redacted(base))
+		}
+	case "":
+		return nil, fmt.Errorf("invalid proxy URL missing scheme: %s", web.Redacted(base))
+	default:
+		return nil, fmt.Errorf("invalid proxy URL scheme (must be https, http, file): %s", web.Redacted(base))
+	}
+
 	enc, err := module.EncodePath(path)
 	if err != nil {
 		return nil, err
 	}
-	return &proxyRepo{strings.TrimSuffix(baseURL, "/") + "/" + pathEscape(enc), path}, nil
+
+	base.Path = strings.TrimSuffix(base.Path, "/") + "/" + enc
+	base.RawPath = strings.TrimSuffix(base.RawPath, "/") + "/" + pathEscape(enc)
+	return &proxyRepo{base, path}, nil
 }
 
 func (p *proxyRepo) ModulePath() string {
 	return p.path
 }
 
+func (p *proxyRepo) getBytes(path string) ([]byte, error) {
+	body, err := p.getBody(path)
+	if err != nil {
+		return nil, err
+	}
+	defer body.Close()
+	return ioutil.ReadAll(body)
+}
+
+func (p *proxyRepo) getBody(path string) (io.ReadCloser, error) {
+	fullPath := pathpkg.Join(p.url.Path, path)
+	if p.url.Scheme == "file" {
+		rawPath, err := url.PathUnescape(fullPath)
+		if err != nil {
+			return nil, err
+		}
+		if runtime.GOOS == "windows" && len(rawPath) >= 4 && rawPath[0] == '/' && unicode.IsLetter(rune(rawPath[1])) && rawPath[2] == ':' {
+			// On Windows, file URLs look like "file:///C:/foo/bar". url.Path will
+			// start with a slash which must be removed. See golang.org/issue/6027.
+			rawPath = rawPath[1:]
+		}
+		return os.Open(filepath.FromSlash(rawPath))
+	}
+
+	target := *p.url
+	target.Path = fullPath
+	target.RawPath = pathpkg.Join(target.RawPath, pathEscape(path))
+
+	resp, err := web.Get(web.DefaultSecurity, &target)
+	if err != nil {
+		return nil, err
+	}
+	if err := resp.Err(); err != nil {
+		resp.Body.Close()
+		return nil, err
+	}
+	return resp.Body, nil
+}
+
 func (p *proxyRepo) Versions(prefix string) ([]string, error) {
-	var data []byte
-	err := webGetBytes(p.url+"/@v/list", &data)
+	data, err := p.getBytes("@v/list")
 	if err != nil {
 		return nil, err
 	}
@@ -134,8 +246,7 @@ func (p *proxyRepo) Versions(prefix string) ([]string, error) {
 }
 
 func (p *proxyRepo) latest() (*RevInfo, error) {
-	var data []byte
-	err := webGetBytes(p.url+"/@v/list", &data)
+	data, err := p.getBytes("@v/list")
 	if err != nil {
 		return nil, err
 	}
@@ -164,12 +275,11 @@ func (p *proxyRepo) latest() (*RevInfo, error) {
 }
 
 func (p *proxyRepo) Stat(rev string) (*RevInfo, error) {
-	var data []byte
 	encRev, err := module.EncodeVersion(rev)
 	if err != nil {
 		return nil, err
 	}
-	err = webGetBytes(p.url+"/@v/"+pathEscape(encRev)+".info", &data)
+	data, err := p.getBytes("@v/" + encRev + ".info")
 	if err != nil {
 		return nil, err
 	}
@@ -181,9 +291,7 @@ func (p *proxyRepo) Stat(rev string) (*RevInfo, error) {
 }
 
 func (p *proxyRepo) Latest() (*RevInfo, error) {
-	var data []byte
-	u := p.url + "/@latest"
-	err := webGetBytes(u, &data)
+	data, err := p.getBytes("@latest")
 	if err != nil {
 		// TODO return err if not 404
 		return p.latest()
@@ -196,12 +304,11 @@ func (p *proxyRepo) Latest() (*RevInfo, error) {
 }
 
 func (p *proxyRepo) GoMod(version string) ([]byte, error) {
-	var data []byte
 	encVer, err := module.EncodeVersion(version)
 	if err != nil {
 		return nil, err
 	}
-	err = webGetBytes(p.url+"/@v/"+pathEscape(encVer)+".mod", &data)
+	data, err := p.getBytes("@v/" + encVer + ".mod")
 	if err != nil {
 		return nil, err
 	}
@@ -209,12 +316,11 @@ func (p *proxyRepo) GoMod(version string) ([]byte, error) {
 }
 
 func (p *proxyRepo) Zip(dst io.Writer, version string) error {
-	var body io.ReadCloser
 	encVer, err := module.EncodeVersion(version)
 	if err != nil {
 		return err
 	}
-	err = webGetBody(p.url+"/@v/"+pathEscape(encVer)+".zip", &body)
+	body, err := p.getBody("@v/" + encVer + ".zip")
 	if err != nil {
 		return err
 	}

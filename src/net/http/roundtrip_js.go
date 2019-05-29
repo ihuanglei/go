@@ -17,6 +17,8 @@ import (
 	"syscall/js"
 )
 
+var uint8Array = js.Global().Get("Uint8Array")
+
 // jsFetchMode is a Request.Header map key that, if present,
 // signals that the map entry is actually an option to the Fetch API mode setting.
 // Valid values are: "cors", "no-cors", "same-origin", "navigate"
@@ -32,6 +34,14 @@ const jsFetchMode = "js.fetch:mode"
 //
 // Reference: https://developer.mozilla.org/en-US/docs/Web/API/WindowOrWorkerGlobalScope/fetch#Parameters
 const jsFetchCreds = "js.fetch:credentials"
+
+// jsFetchRedirect is a Request.Header map key that, if present,
+// signals that the map entry is actually an option to the Fetch API redirect setting.
+// Valid values are: "follow", "error", "manual"
+// The default is "follow".
+//
+// Reference: https://developer.mozilla.org/en-US/docs/Web/API/WindowOrWorkerGlobalScope/fetch#Parameters
+const jsFetchRedirect = "js.fetch:redirect"
 
 // RoundTrip implements the RoundTripper interface using the WHATWG Fetch API.
 func (t *Transport) RoundTrip(req *Request) (*Response, error) {
@@ -60,6 +70,10 @@ func (t *Transport) RoundTrip(req *Request) (*Response, error) {
 		opt.Set("mode", h)
 		req.Header.Del(jsFetchMode)
 	}
+	if h := req.Header.Get(jsFetchRedirect); h != "" {
+		opt.Set("redirect", h)
+		req.Header.Del(jsFetchRedirect)
+	}
 	if ac != js.Undefined() {
 		opt.Set("signal", ac.Get("signal"))
 	}
@@ -84,9 +98,9 @@ func (t *Transport) RoundTrip(req *Request) (*Response, error) {
 			return nil, err
 		}
 		req.Body.Close()
-		a := js.TypedArrayOf(body)
-		defer a.Release()
-		opt.Set("body", a)
+		buf := uint8Array.New(len(body))
+		js.CopyBytesToJS(buf, body)
+		opt.Set("body", buf)
 	}
 	respPromise := js.Global().Call("fetch", req.URL.String(), opt)
 	var (
@@ -126,10 +140,11 @@ func (t *Transport) RoundTrip(req *Request) (*Response, error) {
 			body = &arrayReader{arrayPromise: result.Call("arrayBuffer")}
 		}
 
+		code := result.Get("status").Int()
 		select {
 		case respCh <- &Response{
-			Status:        result.Get("status").String() + " " + StatusText(result.Get("status").Int()),
-			StatusCode:    result.Get("status").Int(),
+			Status:        fmt.Sprintf("%d %s", code, StatusText(code)),
+			StatusCode:    code,
 			Header:        header,
 			ContentLength: contentLength,
 			Body:          body,
@@ -197,9 +212,7 @@ func (r *streamReader) Read(p []byte) (n int, err error) {
 				return nil
 			}
 			value := make([]byte, result.Get("value").Get("byteLength").Int())
-			a := js.TypedArrayOf(value)
-			a.Call("set", result.Get("value"))
-			a.Release()
+			js.CopyBytesToGo(value, result.Get("value"))
 			bCh <- value
 			return nil
 		})
@@ -260,11 +273,9 @@ func (r *arrayReader) Read(p []byte) (n int, err error) {
 		)
 		success := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
 			// Wrap the input ArrayBuffer with a Uint8Array
-			uint8arrayWrapper := js.Global().Get("Uint8Array").New(args[0])
+			uint8arrayWrapper := uint8Array.New(args[0])
 			value := make([]byte, uint8arrayWrapper.Get("byteLength").Int())
-			a := js.TypedArrayOf(value)
-			a.Call("set", uint8arrayWrapper)
-			a.Release()
+			js.CopyBytesToGo(value, uint8arrayWrapper)
 			bCh <- value
 			return nil
 		})
