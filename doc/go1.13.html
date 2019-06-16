@@ -25,6 +25,16 @@ Do not send CLs removing the interior tags from such phrases.
 </p>
 
 <p>
+  As of Go 1.13, the go command by default downloads and authenticates
+  modules using the Go module mirror and Go checksum database run by Google. See
+  <a href="https://proxy.golang.org/privacy">https://proxy.golang.org/privacy</a>
+  for privacy information about these services and the
+  <a href="/cmd/go/#hdr-Module_downloading_and_verification">go command documentation</a>
+  for configuration details including how to disable the use of these servers or use
+  different ones.
+</p>
+
+<p>
 TODO
 </p>
 
@@ -94,4 +104,326 @@ TODO; link to <a href="/doc/go1.12#tls_1_3">Go 1.12 notes</a>.
 <p>
 TODO
 </p>
+
+<!-- CL 161904: https://golang.org/cl/161904: cmd/compile: do not export float or complex constants with -asmhdr -->
+<!-- CL 167780: https://golang.org/cl/167780: cmd/compile: rename init function from init.ializers back to init -->
+<!-- CL 170448: https://golang.org/cl/170448: cmd/compile: enable -newescape by default -->
+<!-- CL 174125: https://golang.org/cl/174125: cmd/dist: add support for openbsd/arm64 -->
+<!-- CL 177797: https://golang.org/cl/177797: cmd/doc: always print package clause except for commands -->
+<!-- CL 173345: https://golang.org/cl/173345: cmd/go: add -trimpath build flag -->
+<!-- CL 173438: https://golang.org/cl/173438: cmd/go: change -tags to a comma-separated list -->
+<!-- CL 175983: https://golang.org/cl/175983: cmd/go: set the "generate" build tag in go generate, per design doc -->
+<!-- CL 167747: https://golang.org/cl/167747: 'go get' in module mode now supports the version suffix '@patch'.: cmd/go/internal/modget: support the suffix '@patch' in 'go get' -->
+
+<dl id="all"><dt><a href="/pkg/all/">all</a></dt>
+  <dd>
+    <p><!-- CL 174457 -->
+      TODO: <a href="https://golang.org/cl/174457">https://golang.org/cl/174457</a>: add new GOOS=illumos, split out of GOOS=solaris
+    </p>
+
+</dl><!-- all -->
+
+<dl id="bytes"><dt><a href="/pkg/bytes/">bytes</a></dt>
+  <dd>
+    <p><!-- CL 161760 -->
+      TODO: <a href="https://golang.org/cl/161760">https://golang.org/cl/161760</a>: hoist error creation out of function
+    </p>
+
+    <p>
+      The new <a href="/pkg/bytes/#ToValidUTF8"><code>ToValidUTF8</code></a> function returns a
+      copy of a given byte slice with each run of invalid UTF-8 byte sequences replaced by a given slice.
+    </p>
+
+</dl><!-- bytes -->
+
+<dl id="context"><dt><a href="/pkg/context/">context</a></dt>
+  <dd>
+    <p><!-- CL 169080 -->
+    The formatting of contexts returned by <a href="/pkg/context/#WithValue"><code>WithValue</code></a> no longer depends on <code>fmt</code> and will not stringify in the same way. Code that depends on the exact previous stringification might be affected.
+    </p>
+
+</dl><!-- context -->
+
+<dl id="crypto/ed25519"><dt><a href="/pkg/crypto/ed25519/">crypto/ed25519</a></dt>
+  <dd>
+    <p><!-- CL 174945 -->
+      TODO: <a href="https://golang.org/cl/174945">https://golang.org/cl/174945</a>: promote from golang.org/x/crypto/ed25519
+    </p>
+
+</dl><!-- crypto/ed25519 -->
+
+<dl id="crypto/tls"><dt><a href="/pkg/crypto/tls/">crypto/tls</a></dt>
+  <dd>
+    <p><!-- CL 177698 -->
+      TODO: <a href="https://golang.org/cl/177698">https://golang.org/cl/177698</a>: add support for Ed25519 certificates in TLS 1.2 and 1.3
+    </p>
+
+</dl><!-- crypto/tls -->
+
+<dl id="database/sql"><dt><a href="/pkg/database/sql/">database/sql</a></dt>
+  <dd>
+    <p><!-- CL 170699 -->
+      The new <a href="/pkg/database/sql/#NullTime"><code>NullTime</code></a> type represents a <code>time.Time</code> that may be null.
+    </p>
+
+    <p><!-- CL 174178 -->
+      The new  <a href="/pkg/database/sql/#NullInt32"><code>NullInt32</code></a> type represents an <code>int32</code> that may be null.
+    </p>
+
+</dl><!-- database/sql -->
+
+<dl id="debug/dwarf"><dt><a href="/pkg/debug/dwarf/">debug/dwarf</a></dt>
+  <dd>
+    <p><!-- CL 158797 -->
+      TODO: <a href="https://golang.org/cl/158797">https://golang.org/cl/158797</a>: more graceful handling of unsupported types
+    </p>
+
+</dl><!-- debug/dwarf -->
+
+<dl id="html/template"><dt><a href="/pkg/html/template/">html/template</a></dt>
+  <dd>
+    <p><!-- CL 175218 -->
+      When using a <code>&lt;script&gt;</code> tag with "module" set as the
+      type attribute, code will now be interperted as <a href="https://html.spec.whatwg.org/multipage/scripting.html#the-script-element:module-script-2">JavaScript module script</a>.
+    </p>
+
+</dl><!-- html/template -->
+
+<dl id="log"><dt><a href="/pkg/log/">log</a></dt>
+  <dd>
+    <p><!-- CL 168920 -->
+      The new <a href="/pkg/log/#Writer"><code>Writer</code></a> function returns the output destination for the standard logger.
+    </p>
+
+</dl><!-- log -->
+
+<dl id="math/big"><dt><a href="/pkg/math/big/">math/big</a></dt>
+  <dd>
+    <p><!-- CL 160682 -->
+      TODO: <a href="https://golang.org/cl/160682">https://golang.org/cl/160682</a>: implement Rat.SetUint64
+    </p>
+
+    <p><!-- CL 168237 -->
+      TODO: <a href="https://golang.org/cl/168237">https://golang.org/cl/168237</a>: accept non-decimal floats with Rat.SetString
+    </p>
+
+</dl><!-- math/big -->
+
+<dl id="math/bits"><dt><a href="/pkg/math/bits/">math/bits</a></dt>
+  <dd>
+    <p><!-- CL 178177 -->
+      TODO: <a href="https://golang.org/cl/178177">https://golang.org/cl/178177</a>: document that Add, Sub, Mul, RotateLeft, ReverseBytes are constant time
+    </p>
+
+</dl><!-- math/bits -->
+
+<dl id="net"><dt><a href="/pkg/net/">net</a></dt>
+  <dd>
+    <p><!-- CL 156366 -->
+      TODO: <a href="https://golang.org/cl/156366">https://golang.org/cl/156366</a>: use DNS over TCP when use-vc is set in resolv.conf
+    </p>
+
+    <p><!-- CL 166297 -->
+      TODO: <a href="https://golang.org/cl/166297">https://golang.org/cl/166297</a>: use libSystem bindings for DNS resolution on macos if cgo is unavailable
+    </p>
+
+    <p><!-- CL 170678 -->
+      TODO: <a href="https://golang.org/cl/170678">https://golang.org/cl/170678</a>: add KeepAlive field to ListenConfig
+    </p>
+
+</dl><!-- net -->
+
+<dl id="net/http"><dt><a href="/pkg/net/http/">net/http</a></dt>
+  <dd>
+    <p><!-- CL 130256 -->
+      The new field <a href="/pkg/net/http/#Transport.ForceAttemptHTTP2"><code>Transport.ForceAttemptHTTP2</code></a>
+      controls whether HTTP/2 is enabled when a non-zero <code>Dial</code>, <code>DialTLS</code>, or <code>DialContext</code>
+      func or <code>TLSClientConfig</code> is provided.
+    </p>
+
+    <p><!-- CL 140357 -->
+      When reusing HTTP/2, the <a href="/pkg/net/http#Transport"><code>Transport</code></a> no longer performs unnecessary TLS handshakes.
+    </p>
+
+    <p><!-- CL 154383 -->
+      <a href="/pkg/net/http/#TimeoutHandler"><code>TimeoutHandler</code></a>'s
+      <a href="/pkg/net/http/#ResponseWriter"><code>ResponseWriter</code></a> now implements the
+      <a href="/pkg/net/http/#Pusher"><code>Pusher</code></a> and <a href="/pkg/net/http/#Flusher"><code>Flusher</code></a> interfaces.
+    </p>
+
+    <p><!-- CL 167681 -->
+      The new <a href="/pkg/net/http#Server"><code>Server</code></a> fields
+      <a href="/pkg/net/http/#Server.BaseContext"><code>BaseContext</code></a> and
+      <a href="/pkg/net/http/#Server.ConnContext"><code>ConnContext</code></a>
+      allow finer control over the <a href="/pkg/context#Context"><code>Context</code></a> values provided to requests and connections.
+    </p>
+
+    <p><!-- CL 173658 -->
+      The new <a href="/pkg/net/http/#Header"><code>Header</code></a> method
+      <a href="/pkg/net/http/#Header.Clone"><code>Clone</code></a> returns a copy of the receiver.
+    </p>
+
+</dl><!-- net/http -->
+
+<dl id="os"><dt><a href="/pkg/os/">os</a></dt>
+  <dd>
+    <p><!-- CL 160877 -->
+      The new <a href="/pkg/os/#UserConfigDir"><code>UserConfigDir</code></a> function
+      returns the default directory to use for user-specific configuration data.
+    </p>
+
+    <p><!-- CL 166578 -->
+      If a <a href="/pkg/os/#File"><code>File</code></a> is opened using the O_APPEND flag, its
+      <a href="/pkg/os/#File.WriteAt"><code>WriteAt</code></a> method will always return an error.
+    </p>
+
+</dl><!-- os -->
+
+<dl id="os/exec"><dt><a href="/pkg/os/exec/">os/exec</a></dt>
+  <dd>
+    <p><!-- CL 174318 -->
+      On Windows, the environment for a <a href="/pkg/os/exec#Cmd"><code>Cmd</code></a> always inherits the
+      <code>%SYSTEMROOT%</code> value of the parent process unless the
+      <a href="/pkg/os/exec#Cmd.Env"><code>Cmd.Env</code></a> field includes an explicit value for it.
+    </p>
+
+</dl><!-- os/exec -->
+
+<dl id="reflect"><dt><a href="/pkg/reflect/">reflect</a></dt>
+  <dd>
+    <p><!-- CL 171337 -->
+      The new <a href="/pkg/reflect/#Value.IsZero"><code>Value.IsZero</code></a> method reports whether a <code>Value</code> is a zero value for its type.
+    </p>
+
+    <p><!-- CL 174531 -->
+      The <a href="/pkg/reflect/#MakeFunc"><code>MakeFunc</code></a> function now allows assignment conversions on returned values, instead of requiring exact type match. This is particularly useful when the type being returned is an interface type, but the value actually returned  is a concrete value implementing that type.
+    </p>
+
+</dl><!-- reflect -->
+
+<dl id="runtime"><dt><a href="/pkg/runtime/">runtime</a></dt>
+  <dd>
+    <p><!-- CL 170318 -->
+      TODO: <a href="https://golang.org/cl/170318">https://golang.org/cl/170318</a>: randomize package initialization order in race mode
+    </p>
+
+</dl><!-- runtime -->
+
+<dl id="runtime, internal/poll, net"><dt><a href="/pkg/runtime, internal/poll, net/">runtime, internal/poll, net</a></dt>
+  <dd>
+    <p><!-- CL 166497 -->
+      TODO: <a href="https://golang.org/cl/166497">https://golang.org/cl/166497</a>: report event scanning error on read event
+    </p>
+
+</dl><!-- runtime, internal/poll, net -->
+
+<dl id="runtime/cgo"><dt><a href="/pkg/runtime/cgo/">runtime/cgo</a></dt>
+  <dd>
+    <p><!-- CL 170127 -->
+      TODO: <a href="https://golang.org/cl/170127">https://golang.org/cl/170127</a>: look for android_get_device_api_level in libc.so
+    </p>
+
+</dl><!-- runtime/cgo -->
+
+<dl id="strings"><dt><a href="/pkg/strings">strings</a></dt>
+  <dd>
+    <p><!-- CL 142003 -->
+      The new <a href="/pkg/strings/#ToValidUTF8"><code>ToValidUTF8</code></a> function returns a
+      copy of a given string with each run of invalid UTF-8 byte sequences replaced by a given string.
+    </p>
+
+</dl><!-- strings -->
+
+<dl id="sync"><dt><a href="/pkg/sync/">sync</a></dt>
+  <dd>
+    <p><!-- CL 166960 -->
+      Large <a href="/pkg/sync/#Pool"><code>Pool</code></a> no longer increase stop-the-world pause times.
+    </p>
+
+    <p><!-- CL 166961 -->
+      <code>Pool</code> no longer needs to be completely repopulated after every GC. It now retains some objects across GCs,
+      as opposed to releasing all objects, reducing load spikes for heavy users of <code>Pool</code>.
+    </p>
+
+</dl><!-- sync -->
+
+<dl id="syscall"><dt><a href="/pkg/syscall/">syscall</a></dt>
+  <dd>
+    <p><!-- CL 168479 -->
+      Uses of <code>_getdirentries64</code> have been removed from Darwin builds, to allow binaries
+      built with 1.12 to be uploaded to the macOS App Store.
+    </p>
+
+    <p><!-- CL 174197 -->
+      The new <code>ProcessAttributes</code> and <code>ThreadAttributes</code> fields in
+      <a href="/pkg/syscall/?GOOS=windows#SysProcAttr"><code>SysProcAttr</code></a> have been introduced for Windows,
+      exposing security settings when creating new processes.
+    </p>
+
+    <p><!-- CL 174320 -->
+      <code>EINVAL</code> is no longer returned in zero
+      <a href="/pkg/syscall/?GOOS=windows#Chmod"><code>Chmod</code></a> mode on Windows.
+    </p>
+
+</dl><!-- syscall -->
+
+<dl id="syscall/js"><dt><a href="/pkg/syscall/js/">syscall/js</a></dt>
+  <dd>
+    <p><!-- CL 177537 -->
+      <a href="/pkg/syscall/js/#TypedArray"><code>TypedArrayOf</code></a> has been replaced by
+      <a href="/pkg/syscall/js/#CopyBytesToGo"><code>CopyBytesToGo</code></a> and
+      <a href="/pkg/syscall/js/#CopyBytesToJS"><code>CopyBytesToJS</code></a> for copying bytes between a byte slice and a Uint8Array.
+    </p>
+
+</dl><!-- syscall/js -->
+
+<dl id="testing"><dt><a href="/pkg/testing/">testing</a></dt>
+  <dd>
+    <p><!-- CL 112155 -->
+      TODO: <a href="https://golang.org/cl/112155">https://golang.org/cl/112155</a>: stop rounding b.N
+    </p>
+
+    <p><!-- CL 166717 -->
+      TODO: <a href="https://golang.org/cl/166717">https://golang.org/cl/166717</a>: add B.ReportMetric for custom benchmark metrics
+    </p>
+
+    <p><!-- CL 173722 -->
+      TODO: <a href="https://golang.org/cl/173722">https://golang.org/cl/173722</a>: delay flag registration; move to an Init function
+    </p>
+
+</dl><!-- testing -->
+
+<dl id="text/scanner"><dt><a href="/pkg/text/scanner/">text/scanner</a></dt>
+  <dd>
+    <p><!-- CL 163079 -->
+      The new <a href="/pkg/text/scanner/#AllowNumberbars"><code>AllowNumberbars</code></a>
+      mode allows number literals to contain underbars as digit separators.
+    </p>
+
+</dl><!-- text/scanner -->
+
+<dl id="text/template"><dt><a href="/pkg/text/template/">text/template</a></dt>
+  <dd>
+    <p><!-- CL 161762 -->
+      The new <a href="/pkg/text/template/#hdr-Functions">slice function</a>
+      returns the result of slicing its first argument by the following arguments.
+    </p>
+
+</dl><!-- text/template -->
+
+<dl id="time"><dt><a href="/pkg/time/">time</a></dt>
+  <dd>
+    <p><!-- CL 122876 -->
+      Day-of-year is now supported by <a href="/pkg/time/#time.Format"><code>Format</code></a>
+      and <a href="/pkg/time/#Parse"><code>Parse</code></a>.
+    </p>
+
+    <p><!-- CL 167387 -->
+      The new <a href="/pkg/time/#Duration"><code>Duration</code></a> methods
+      <a href="/pkg/time/#Duration.Microseconds"><code>Microseconds</code></a> and
+      <a href="/pkg/time/#Duration.Milliseconds"><code>Milliseconds</code></a> return
+      the duration as an integer count of their respectively named units.
+    </p>
+
+</dl><!-- time -->
 

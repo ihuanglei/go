@@ -12,13 +12,12 @@ import (
 	"io/ioutil"
 	"net/url"
 	"os"
+	"path"
 	pathpkg "path"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
-	"unicode"
 
 	"cmd/go/internal/base"
 	"cmd/go/internal/cfg"
@@ -113,6 +112,13 @@ func proxyURLs() ([]string, error) {
 				break
 			}
 
+			// Single-word tokens are reserved for built-in behaviors, and anything
+			// containing the string ":/" or matching an absolute file path must be a
+			// complete URL. For all other paths, implicitly add "https://".
+			if strings.ContainsAny(proxyURL, ".:/") && !strings.Contains(proxyURL, ":/") && !filepath.IsAbs(proxyURL) && !path.IsAbs(proxyURL) {
+				proxyURL = "https://" + proxyURL
+			}
+
 			// Check that newProxyRepo accepts the URL.
 			// It won't do anything with the path.
 			_, err := newProxyRepo(proxyURL, "golang.org/x/text")
@@ -201,18 +207,6 @@ func (p *proxyRepo) getBytes(path string) ([]byte, error) {
 
 func (p *proxyRepo) getBody(path string) (io.ReadCloser, error) {
 	fullPath := pathpkg.Join(p.url.Path, path)
-	if p.url.Scheme == "file" {
-		rawPath, err := url.PathUnescape(fullPath)
-		if err != nil {
-			return nil, err
-		}
-		if runtime.GOOS == "windows" && len(rawPath) >= 4 && rawPath[0] == '/' && unicode.IsLetter(rune(rawPath[1])) && rawPath[2] == ':' {
-			// On Windows, file URLs look like "file:///C:/foo/bar". url.Path will
-			// start with a slash which must be removed. See golang.org/issue/6027.
-			rawPath = rawPath[1:]
-		}
-		return os.Open(filepath.FromSlash(rawPath))
-	}
 
 	target := *p.url
 	target.Path = fullPath
