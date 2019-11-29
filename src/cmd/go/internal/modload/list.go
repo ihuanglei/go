@@ -5,15 +5,18 @@
 package modload
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 
 	"cmd/go/internal/base"
+	"cmd/go/internal/cfg"
 	"cmd/go/internal/modinfo"
-	"cmd/go/internal/module"
 	"cmd/go/internal/par"
 	"cmd/go/internal/search"
+
+	"golang.org/x/mod/module"
 )
 
 func ListModules(args []string, listU, listVersions bool) []*modinfo.ModulePublic {
@@ -54,6 +57,9 @@ func listModules(args []string, listVersions bool) []*modinfo.ModulePublic {
 		if search.IsRelativePath(arg) {
 			base.Fatalf("go: cannot use relative path %s to specify module", arg)
 		}
+		if !HasModRoot() && (arg == "all" || strings.Contains(arg, "...")) {
+			base.Fatalf("go: cannot match %q: working directory is not part of a module", arg)
+		}
 		if i := strings.Index(arg, "@"); i >= 0 {
 			path := arg[:i]
 			vers := arg[i+1:]
@@ -70,9 +76,7 @@ func listModules(args []string, listVersions bool) []*modinfo.ModulePublic {
 				mods = append(mods, &modinfo.ModulePublic{
 					Path:    path,
 					Version: vers,
-					Error: &modinfo.ModuleError{
-						Err: err.Error(),
-					},
+					Error:   modinfoError(path, vers, err),
 				})
 				continue
 			}
@@ -116,20 +120,26 @@ func listModules(args []string, listVersions bool) []*modinfo.ModulePublic {
 						mods = append(mods, moduleInfo(module.Version{Path: arg, Version: info.Version}, false))
 					} else {
 						mods = append(mods, &modinfo.ModulePublic{
-							Path: arg,
-							Error: &modinfo.ModuleError{
-								Err: err.Error(),
-							},
+							Path:  arg,
+							Error: modinfoError(arg, "", err),
 						})
 					}
 					continue
 				}
-				mods = append(mods, &modinfo.ModulePublic{
-					Path: arg,
-					Error: &modinfo.ModuleError{
-						Err: fmt.Sprintf("module %q is not a known dependency", arg),
-					},
-				})
+				if cfg.BuildMod == "vendor" {
+					// In vendor mode, we can't determine whether a missing module is “a
+					// known dependency” because the module graph is incomplete.
+					// Give a more explicit error message.
+					mods = append(mods, &modinfo.ModulePublic{
+						Path:  arg,
+						Error: modinfoError(arg, "", errors.New("can't resolve module using the vendor directory\n\t(Use -mod=mod or -mod=readonly to bypass.)")),
+					})
+				} else {
+					mods = append(mods, &modinfo.ModulePublic{
+						Path:  arg,
+						Error: modinfoError(arg, "", errors.New("not a known dependency")),
+					})
+				}
 			} else {
 				fmt.Fprintf(os.Stderr, "warning: pattern %q matched no module dependencies\n", arg)
 			}
@@ -137,4 +147,22 @@ func listModules(args []string, listVersions bool) []*modinfo.ModulePublic {
 	}
 
 	return mods
+}
+
+// modinfoError wraps an error to create an error message in
+// modinfo.ModuleError with minimal redundancy.
+func modinfoError(path, vers string, err error) *modinfo.ModuleError {
+	var nerr *NoMatchingVersionError
+	var merr *module.ModuleError
+	if errors.As(err, &nerr) {
+		// NoMatchingVersionError contains the query, so we don't mention the
+		// query again in ModuleError.
+		err = &module.ModuleError{Path: path, Err: err}
+	} else if !errors.As(err, &merr) {
+		// If the error does not contain path and version, wrap it in a
+		// module.ModuleError.
+		err = &module.ModuleError{Path: path, Version: vers, Err: err}
+	}
+
+	return &modinfo.ModuleError{Err: err.Error()}
 }

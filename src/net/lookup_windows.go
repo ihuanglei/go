@@ -358,7 +358,8 @@ func validRecs(r *syscall.DNSRecord, dnstype uint16, name string) []*syscall.DNS
 	}
 	rec := make([]*syscall.DNSRecord, 0, 10)
 	for p := r; p != nil; p = p.Next {
-		if p.Dw&dnsSectionMask != syscall.DnsSectionAnswer {
+		// in case of a local machine, DNS records are returned with DNSREC_QUESTION flag instead of DNS_ANSWER
+		if p.Dw&dnsSectionMask != syscall.DnsSectionAnswer && p.Dw&dnsSectionMask != syscall.DnsSectionQuestion {
 			continue
 		}
 		if p.Type != dnstype {
@@ -374,7 +375,7 @@ func validRecs(r *syscall.DNSRecord, dnstype uint16, name string) []*syscall.DNS
 
 // returns the last CNAME in chain
 func resolveCNAME(name *uint16, r *syscall.DNSRecord) *uint16 {
-	// limit cname resolving to 10 in case of a infinite CNAME loop
+	// limit cname resolving to 10 in case of an infinite CNAME loop
 Cname:
 	for cnameloop := 0; cnameloop < 10; cnameloop++ {
 		for p := r; p != nil; p = p.Next {
