@@ -3,11 +3,11 @@ module cmd
 go 1.14
 
 require (
-	github.com/google/pprof v0.0.0-20191105193234-27840fff0d09
-	github.com/ianlancetaylor/demangle v0.0.0-20180524225900-fc6590592b44 // indirect
-	golang.org/x/arch v0.0.0-20190815191158-8a70ba74b3a1
-	golang.org/x/crypto v0.0.0-20191011191535-87dc89f01550
-	golang.org/x/mod v0.1.1-0.20191126161957-788aebd06792
-	golang.org/x/sys v0.0.0-20190502175342-a43fa875dd82 // indirect
-	golang.org/x/tools v0.0.0-20191119224855-298f0cb1881e
+	github.com/google/pprof v0.0.0-20200212024743-f11f1df84d12
+	golang.org/x/arch v0.0.0-20191126211547-368ea8f32fff
+	golang.org/x/crypto v0.0.0-20200214034016-1d94cc7ab1c6
+	golang.org/x/mod v0.2.0
+	golang.org/x/sys v0.0.0-20200219091948-cb0a6d8edb6c // indirect
+	golang.org/x/tools v0.0.0-20200219195521-7c4b6277d74d
+	golang.org/x/xerrors v0.0.0-20191204190536-9bdfabe68543 // indirect
 )

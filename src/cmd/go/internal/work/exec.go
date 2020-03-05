@@ -1774,6 +1774,11 @@ func (b *Builder) fmtcmd(dir string, format string, args ...interface{}) string 
 	}
 	if b.WorkDir != "" {
 		cmd = strings.ReplaceAll(cmd, b.WorkDir, "$WORK")
+		escaped := strconv.Quote(b.WorkDir)
+		escaped = escaped[1 : len(escaped)-1] // strip quote characters
+		if escaped != b.WorkDir {
+			cmd = strings.ReplaceAll(cmd, escaped, "$WORK")
+		}
 	}
 	return cmd
 }
@@ -2124,9 +2129,8 @@ func (b *Builder) gfortran(a *Action, p *load.Package, workdir, out string, flag
 func (b *Builder) ccompile(a *Action, p *load.Package, outfile string, flags []string, file string, compiler []string) error {
 	file = mkAbs(p.Dir, file)
 	desc := p.ImportPath
-	if !filepath.IsAbs(outfile) {
-		outfile = filepath.Join(p.Dir, outfile)
-	}
+	outfile = mkAbs(p.Dir, outfile)
+
 	output, err := b.runOut(a, filepath.Dir(file), b.cCompilerEnv(), compiler, flags, "-o", outfile, "-c", filepath.Base(file))
 	if len(output) > 0 {
 		// On FreeBSD 11, when we pass -g to clang 3.8 it

@@ -62,9 +62,10 @@
 // Allocating and freeing a large object uses the mheap
 // directly, bypassing the mcache and mcentral.
 //
-// Free object slots in an mspan are zeroed only if mspan.needzero is
-// false. If needzero is true, objects are zeroed as they are
-// allocated. There are various benefits to delaying zeroing this way:
+// If mspan.needzero is false, then free object slots in the mspan are
+// already zeroed. Otherwise if needzero is true, objects are zeroed as
+// they are allocated. There are various benefits to delaying zeroing
+// this way:
 //
 //	1. Stack frame allocation can avoid zeroing altogether.
 //
@@ -467,8 +468,7 @@ func mallocinit() {
 
 	// Initialize the heap.
 	mheap_.init()
-	_g_ := getg()
-	_g_.m.mcache = allocmcache()
+	mcache0 = allocmcache()
 
 	// Create initial arena growth hints.
 	if sys.PtrSize == 8 {
@@ -502,6 +502,7 @@ func mallocinit() {
 		// allocation at 0x40 << 32 because when using 4k pages with 3-level
 		// translation buffers, the user address space is limited to 39 bits
 		// On darwin/arm64, the address space is even smaller.
+		//
 		// On AIX, mmaps starts at 0x0A00000000000000 for 64-bit.
 		// processes.
 		for i := 0x7f; i >= 0; i-- {
@@ -951,7 +952,19 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 
 	shouldhelpgc := false
 	dataSize := size
-	c := gomcache()
+	var c *mcache
+	if mp.p != 0 {
+		c = mp.p.ptr().mcache
+	} else {
+		// We will be called without a P while bootstrapping,
+		// in which case we use mcache0, which is set in mallocinit.
+		// mcache0 is cleared when bootstrapping is complete,
+		// by procresize.
+		c = mcache0
+		if c == nil {
+			throw("malloc called with no P")
+		}
+	}
 	var x unsafe.Pointer
 	noscan := typ == nil || typ.ptrdata == 0
 	if size <= maxSmallSize {
@@ -1191,7 +1204,7 @@ func reflect_unsafe_NewArray(typ *_type, n int) unsafe.Pointer {
 }
 
 func profilealloc(mp *m, x unsafe.Pointer, size uintptr) {
-	mp.mcache.next_sample = nextSample()
+	mp.p.ptr().mcache.next_sample = nextSample()
 	mProf_Malloc(x, size)
 }
 

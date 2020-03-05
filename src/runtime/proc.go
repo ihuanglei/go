@@ -82,6 +82,7 @@ var modinfo string
 var (
 	m0           m
 	g0           g
+	mcache0      *mcache
 	raceprocctx0 uintptr
 )
 
@@ -857,23 +858,8 @@ func casGFromPreempted(gp *g, old, new uint32) bool {
 // goroutines.
 func stopTheWorld(reason string) {
 	semacquire(&worldsema)
-	gp := getg()
-	gp.m.preemptoff = reason
-	systemstack(func() {
-		// Mark the goroutine which called stopTheWorld preemptible so its
-		// stack may be scanned.
-		// This lets a mark worker scan us while we try to stop the world
-		// since otherwise we could get in a mutual preemption deadlock.
-		// We must not modify anything on the G stack because a stack shrink
-		// may occur. A stack shrink is otherwise OK though because in order
-		// to return from this function (and to leave the system stack) we
-		// must have preempted all goroutines, including any attempting
-		// to scan our stack, in which case, any stack shrinking will
-		// have already completed by the time we exit.
-		casgstatus(gp, _Grunning, _Gwaiting)
-		stopTheWorldWithSema()
-		casgstatus(gp, _Gwaiting, _Grunning)
-	})
+	getg().m.preemptoff = reason
+	systemstack(stopTheWorldWithSema)
 }
 
 // startTheWorld undoes the effects of stopTheWorld.
@@ -885,30 +871,9 @@ func startTheWorld() {
 	getg().m.preemptoff = ""
 }
 
-// stopTheWorldGC has the same effect as stopTheWorld, but blocks
-// until the GC is not running. It also blocks a GC from starting
-// until startTheWorldGC is called.
-func stopTheWorldGC(reason string) {
-	semacquire(&gcsema)
-	stopTheWorld(reason)
-}
-
-// startTheWorldGC undoes the effects of stopTheWorldGC.
-func startTheWorldGC() {
-	startTheWorld()
-	semrelease(&gcsema)
-}
-
-// Holding worldsema grants an M the right to try to stop the world.
+// Holding worldsema grants an M the right to try to stop the world
+// and prevents gomaxprocs from changing concurrently.
 var worldsema uint32 = 1
-
-// Holding gcsema grants the M the right to block a GC, and blocks
-// until the current GC is done. In particular, it prevents gomaxprocs
-// from changing concurrently.
-//
-// TODO(mknyszek): Once gomaxprocs and the execution tracer can handle
-// being changed/enabled during a GC, remove this.
-var gcsema uint32 = 1
 
 // stopTheWorldWithSema is the core implementation of stopTheWorld.
 // The caller is responsible for acquiring worldsema and disabling
@@ -2621,6 +2586,27 @@ func dropg() {
 // We pass now in and out to avoid extra calls of nanotime.
 //go:yeswritebarrierrec
 func checkTimers(pp *p, now int64) (rnow, pollUntil int64, ran bool) {
+	// If there are no timers to adjust, and the first timer on
+	// the heap is not yet ready to run, then there is nothing to do.
+	if atomic.Load(&pp.adjustTimers) == 0 {
+		next := int64(atomic.Load64(&pp.timer0When))
+		if next == 0 {
+			return now, 0, false
+		}
+		if now == 0 {
+			now = nanotime()
+		}
+		if now < next {
+			// Next timer is not ready to run.
+			// But keep going if we would clear deleted timers.
+			// This corresponds to the condition below where
+			// we decide whether to call clearDeletedTimers.
+			if pp != getg().m.p.ptr() || int(atomic.Load(&pp.deletedTimers)) <= int(atomic.Load(&pp.numTimers)/4) {
+				return now, next, false
+			}
+		}
+	}
+
 	lock(&pp.timersLock)
 
 	adjusttimers(pp)
@@ -2641,6 +2627,13 @@ func checkTimers(pp *p, now int64) (rnow, pollUntil int64, ran bool) {
 			}
 			ran = true
 		}
+	}
+
+	// If this is the local P, and there are a lot of deleted timers,
+	// clear them out. We only do this for the local P to reduce
+	// lock contention on timersLock.
+	if pp == getg().m.p.ptr() && int(atomic.Load(&pp.deletedTimers)) > len(pp.timers)/4 {
+		clearDeletedTimers(pp)
 	}
 
 	unlock(&pp.timersLock)
@@ -2767,7 +2760,7 @@ func preemptPark(gp *g) {
 }
 
 // goyield is like Gosched, but it:
-// - does not emit a GoSched trace event
+// - emits a GoPreempt trace event instead of a GoSched trace event
 // - puts the current G on the runq of the current P instead of the globrunq
 func goyield() {
 	checkTimeouts()
@@ -2775,6 +2768,9 @@ func goyield() {
 }
 
 func goyield_m(gp *g) {
+	if trace.enabled {
+		traceGoPreempt()
+	}
 	pp := gp.m.p.ptr()
 	casgstatus(gp, _Grunning, _Grunnable)
 	dropg()
@@ -2962,7 +2958,6 @@ func reentersyscall(pc, sp uintptr) {
 
 	_g_.m.syscalltick = _g_.m.p.ptr().syscalltick
 	_g_.sysblocktraced = true
-	_g_.m.mcache = nil
 	pp := _g_.m.p.ptr()
 	pp.m = 0
 	_g_.m.oldp.set(pp)
@@ -3088,9 +3083,6 @@ func exitsyscall() {
 	oldp := _g_.m.oldp.ptr()
 	_g_.m.oldp = 0
 	if exitsyscallfast(oldp) {
-		if _g_.m.mcache == nil {
-			throw("lost mcache")
-		}
 		if trace.enabled {
 			if oldp != _g_.m.p.ptr() || _g_.m.syscalltick != _g_.m.p.ptr().syscalltick {
 				systemstack(traceGoStart)
@@ -3140,10 +3132,6 @@ func exitsyscall() {
 
 	// Call the scheduler.
 	mcall(exitsyscall0)
-
-	if _g_.m.mcache == nil {
-		throw("lost mcache")
-	}
 
 	// Scheduler returned, so we're allowed to run now.
 	// Delete the syscallsp information that we left for
@@ -4038,10 +4026,12 @@ func (pp *p) init(id int32) {
 	pp.wbBuf.reset()
 	if pp.mcache == nil {
 		if id == 0 {
-			if getg().m.mcache == nil {
+			if mcache0 == nil {
 				throw("missing mcache?")
 			}
-			pp.mcache = getg().m.mcache // bootstrap
+			// Use the bootstrap mcache0. Only one P will get
+			// mcache0: the one with ID 0.
+			pp.mcache = mcache0
 		} else {
 			pp.mcache = allocmcache()
 		}
@@ -4083,7 +4073,10 @@ func (pp *p) destroy() {
 		lock(&pp.timersLock)
 		moveTimers(plocal, pp.timers)
 		pp.timers = nil
+		pp.numTimers = 0
 		pp.adjustTimers = 0
+		pp.deletedTimers = 0
+		atomic.Store64(&pp.timer0When, 0)
 		unlock(&pp.timersLock)
 		unlock(&plocal.timersLock)
 	}
@@ -4218,7 +4211,6 @@ func procresize(nprocs int32) *p {
 			_g_.m.p.ptr().m = 0
 		}
 		_g_.m.p = 0
-		_g_.m.mcache = nil
 		p := allp[0]
 		p.m = 0
 		p.status = _Pidle
@@ -4227,6 +4219,9 @@ func procresize(nprocs int32) *p {
 			traceGoStart()
 		}
 	}
+
+	// g.m.p is now set, so we no longer need mcache0 for bootstrapping.
+	mcache0 = nil
 
 	// release resources from unused P's
 	for i := nprocs; i < old; i++ {
@@ -4293,7 +4288,7 @@ func acquirep(_p_ *p) {
 func wirep(_p_ *p) {
 	_g_ := getg()
 
-	if _g_.m.p != 0 || _g_.m.mcache != nil {
+	if _g_.m.p != 0 {
 		throw("wirep: already in go")
 	}
 	if _p_.m != 0 || _p_.status != _Pidle {
@@ -4304,7 +4299,6 @@ func wirep(_p_ *p) {
 		print("wirep: p->m=", _p_.m, "(", id, ") p->status=", _p_.status, "\n")
 		throw("wirep: invalid p state")
 	}
-	_g_.m.mcache = _p_.mcache
 	_g_.m.p.set(_p_)
 	_p_.m.set(_g_.m)
 	_p_.status = _Prunning
@@ -4314,19 +4308,18 @@ func wirep(_p_ *p) {
 func releasep() *p {
 	_g_ := getg()
 
-	if _g_.m.p == 0 || _g_.m.mcache == nil {
+	if _g_.m.p == 0 {
 		throw("releasep: invalid arg")
 	}
 	_p_ := _g_.m.p.ptr()
-	if _p_.m.ptr() != _g_.m || _p_.mcache != _g_.m.mcache || _p_.status != _Prunning {
-		print("releasep: m=", _g_.m, " m->p=", _g_.m.p.ptr(), " p->m=", hex(_p_.m), " m->mcache=", _g_.m.mcache, " p->mcache=", _p_.mcache, " p->status=", _p_.status, "\n")
+	if _p_.m.ptr() != _g_.m || _p_.status != _Prunning {
+		print("releasep: m=", _g_.m, " m->p=", _g_.m.p.ptr(), " p->m=", hex(_p_.m), " p->status=", _p_.status, "\n")
 		throw("releasep: invalid p state")
 	}
 	if trace.enabled {
 		traceProcStop(_g_.m.p.ptr())
 	}
 	_g_.m.p = 0
-	_g_.m.mcache = nil
 	_p_.m = 0
 	_p_.status = _Pidle
 	return _p_
@@ -4410,23 +4403,26 @@ func checkdead() {
 	}
 
 	// Maybe jump time forward for playground.
-	_p_ := timejump()
-	if _p_ != nil {
-		for pp := &sched.pidle; *pp != 0; pp = &(*pp).ptr().link {
-			if (*pp).ptr() == _p_ {
-				*pp = _p_.link
-				break
+	if faketime != 0 {
+		when, _p_ := timeSleepUntil()
+		if _p_ != nil {
+			faketime = when
+			for pp := &sched.pidle; *pp != 0; pp = &(*pp).ptr().link {
+				if (*pp).ptr() == _p_ {
+					*pp = _p_.link
+					break
+				}
 			}
+			mp := mget()
+			if mp == nil {
+				// There should always be a free M since
+				// nothing is running.
+				throw("checkdead: no m for timer")
+			}
+			mp.nextp.set(_p_)
+			notewakeup(&mp.park)
+			return
 		}
-		mp := mget()
-		if mp == nil {
-			// There should always be a free M since
-			// nothing is running.
-			throw("checkdead: no m for timer")
-		}
-		mp.nextp.set(_p_)
-		notewakeup(&mp.park)
-		return
 	}
 
 	// There are no goroutines running, so we can look at the P's.
@@ -4471,7 +4467,7 @@ func sysmon() {
 		}
 		usleep(delay)
 		now := nanotime()
-		next := timeSleepUntil()
+		next, _ := timeSleepUntil()
 		if debug.schedtrace <= 0 && (sched.gcwaiting != 0 || atomic.Load(&sched.npidle) == uint32(gomaxprocs)) {
 			lock(&sched.lock)
 			if atomic.Load(&sched.gcwaiting) != 0 || atomic.Load(&sched.npidle) == uint32(gomaxprocs) {
@@ -4493,7 +4489,7 @@ func sysmon() {
 						osRelax(false)
 					}
 					now = nanotime()
-					next = timeSleepUntil()
+					next, _ = timeSleepUntil()
 					lock(&sched.lock)
 					atomic.Store(&sched.sysmonwait, 0)
 					noteclear(&sched.sysmonnote)

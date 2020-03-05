@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"go/build"
+	"go/scanner"
 	"go/token"
 	"io/ioutil"
 	"os"
@@ -186,20 +187,17 @@ type PackageInternal struct {
 	Gccgoflags []string // -gccgoflags for this package
 }
 
+// A NoGoError indicates that no Go files for the package were applicable to the
+// build for that package.
+//
+// That may be because there were no files whatsoever, or because all files were
+// excluded, or because all non-excluded files were test sources.
 type NoGoError struct {
 	Package *Package
 }
 
 func (e *NoGoError) Error() string {
-	// Count files beginning with _ and ., which we will pretend don't exist at all.
-	dummy := 0
-	for _, name := range e.Package.IgnoredGoFiles {
-		if strings.HasPrefix(name, "_") || strings.HasPrefix(name, ".") {
-			dummy++
-		}
-	}
-
-	if len(e.Package.IgnoredGoFiles) > dummy {
+	if len(e.Package.constraintIgnoredGoFiles()) > 0 {
 		// Go files exist, but they were ignored due to build constraints.
 		return "build constraints exclude all Go files in " + e.Package.Dir
 	}
@@ -210,6 +208,23 @@ func (e *NoGoError) Error() string {
 		return "no non-test Go files in " + e.Package.Dir
 	}
 	return "no Go files in " + e.Package.Dir
+}
+
+// rewordError returns a version of err with trivial layers removed and
+// (possibly-wrapped) instances of build.NoGoError replaced with load.NoGoError,
+// which more clearly distinguishes sub-cases.
+func (p *Package) rewordError(err error) error {
+	if mErr, ok := err.(*search.MatchError); ok && mErr.Match.IsLiteral() {
+		err = mErr.Err
+	}
+	var noGo *build.NoGoError
+	if errors.As(err, &noGo) {
+		if p.Dir == "" && noGo.Dir != "" {
+			p.Dir = noGo.Dir
+		}
+		err = &NoGoError{Package: p}
+	}
+	return err
 }
 
 // Resolve returns the resolved version of imports,
@@ -312,10 +327,7 @@ type PackageError struct {
 
 func (p *PackageError) Error() string {
 	// Import cycles deserve special treatment.
-	if p.IsImportCycle {
-		return fmt.Sprintf("%s\npackage %s\n", p.Err, strings.Join(p.ImportStack, "\n\timports "))
-	}
-	if p.Pos != "" {
+	if p.Pos != "" && !p.IsImportCycle {
 		// Omit import stack. The full path to the file where the error
 		// is the most important thing.
 		return p.Pos + ": " + p.Err.Error()
@@ -337,6 +349,8 @@ func (p *PackageError) Error() string {
 	}
 	return "package " + strings.Join(stack, "\n\timports ") + ": " + p.Err.Error()
 }
+
+func (p *PackageError) Unwrap() error { return p.Err }
 
 // PackageError implements MarshalJSON so that Err is marshaled as a string
 // and non-essential fields are omitted.
@@ -582,9 +596,10 @@ func loadImport(pre *preload, path, srcDir string, parent *Package, stk *ImportS
 		if !cfg.ModulesEnabled && path != cleanImport(path) {
 			p.Error = &PackageError{
 				ImportStack: stk.Copy(),
-				Err:         fmt.Errorf("non-canonical import path: %q should be %q", path, pathpkg.Clean(path)),
+				Err:         ImportErrorf(path, "non-canonical import path %q: should be %q", path, pathpkg.Clean(path)),
 			}
 			p.Incomplete = true
+			setErrorPos(p, importPos)
 		}
 	}
 
@@ -1519,17 +1534,26 @@ func (p *Package) load(stk *ImportStack, bp *build.Package, err error) {
 		p.Internal.LocalPrefix = dirToImportPath(p.Dir)
 	}
 
+	// setError sets p.Error if it hasn't already been set. We may proceed
+	// after encountering some errors so that 'go list -e' has more complete
+	// output. If there's more than one error, we should report the first.
+	setError := func(err error) {
+		if p.Error == nil {
+			p.Error = &PackageError{
+				ImportStack: stk.Copy(),
+				Err:         err,
+			}
+		}
+	}
+
 	if err != nil {
-		if _, ok := err.(*build.NoGoError); ok {
-			err = &NoGoError{Package: p}
-		}
 		p.Incomplete = true
-		err = base.ExpandScanner(err)
-		p.Error = &PackageError{
-			ImportStack: stk.Copy(),
-			Err:         err,
+		setError(base.ExpandScanner(p.rewordError(err)))
+		if _, isScanErr := err.(scanner.ErrorList); !isScanErr {
+			return
 		}
-		return
+		// Fall through if there was an error parsing a file. 'go list -e' should
+		// still report imports and other metadata.
 	}
 
 	useBindir := p.Name == "main"
@@ -1545,7 +1569,7 @@ func (p *Package) load(stk *ImportStack, bp *build.Package, err error) {
 		if InstallTargetDir(p) == StalePath {
 			newPath := strings.Replace(p.ImportPath, "code.google.com/p/go.", "golang.org/x/", 1)
 			e := ImportErrorf(p.ImportPath, "the %v command has moved; use %v instead.", p.ImportPath, newPath)
-			p.Error = &PackageError{Err: e}
+			setError(e)
 			return
 		}
 		elem := p.DefaultExecName()
@@ -1658,10 +1682,7 @@ func (p *Package) load(stk *ImportStack, bp *build.Package, err error) {
 	inputs := p.AllFiles()
 	f1, f2 := str.FoldDup(inputs)
 	if f1 != "" {
-		p.Error = &PackageError{
-			ImportStack: stk.Copy(),
-			Err:         fmt.Errorf("case-insensitive file name collision: %q and %q", f1, f2),
-		}
+		setError(fmt.Errorf("case-insensitive file name collision: %q and %q", f1, f2))
 		return
 	}
 
@@ -1674,25 +1695,16 @@ func (p *Package) load(stk *ImportStack, bp *build.Package, err error) {
 	// so we shouldn't see any _cgo_ files anyway, but just be safe.
 	for _, file := range inputs {
 		if !SafeArg(file) || strings.HasPrefix(file, "_cgo_") {
-			p.Error = &PackageError{
-				ImportStack: stk.Copy(),
-				Err:         fmt.Errorf("invalid input file name %q", file),
-			}
+			setError(fmt.Errorf("invalid input file name %q", file))
 			return
 		}
 	}
 	if name := pathpkg.Base(p.ImportPath); !SafeArg(name) {
-		p.Error = &PackageError{
-			ImportStack: stk.Copy(),
-			Err:         fmt.Errorf("invalid input directory name %q", name),
-		}
+		setError(fmt.Errorf("invalid input directory name %q", name))
 		return
 	}
 	if !SafeArg(p.ImportPath) {
-		p.Error = &PackageError{
-			ImportStack: stk.Copy(),
-			Err:         ImportErrorf(p.ImportPath, "invalid import path %q", p.ImportPath),
-		}
+		setError(ImportErrorf(p.ImportPath, "invalid import path %q", p.ImportPath))
 		return
 	}
 
@@ -1735,13 +1747,6 @@ func (p *Package) load(stk *ImportStack, bp *build.Package, err error) {
 		// and HFiles are okay (they might be used by the SFiles).
 		// Also Sysofiles are okay (they might not contain object
 		// code; see issue #16050).
-	}
-
-	setError := func(err error) {
-		p.Error = &PackageError{
-			ImportStack: stk.Copy(),
-			Err:         err,
-		}
 	}
 
 	// The gc toolchain only permits C source files with cgo or SWIG.
@@ -1876,7 +1881,9 @@ func externalLinkingForced(p *Package) bool {
 	// Some targets must use external linking even inside GOROOT.
 	switch cfg.BuildContext.GOOS {
 	case "android":
-		return true
+		if cfg.BuildContext.GOARCH != "arm64" {
+			return true
+		}
 	case "darwin":
 		switch cfg.BuildContext.GOARCH {
 		case "arm", "arm64":
@@ -1937,13 +1944,22 @@ func (p *Package) InternalXGoFiles() []string {
 // using absolute paths. "Possibly relevant" means that files are not excluded
 // due to build tags, but files with names beginning with . or _ are still excluded.
 func (p *Package) InternalAllGoFiles() []string {
-	var extra []string
+	return p.mkAbs(str.StringList(p.constraintIgnoredGoFiles(), p.GoFiles, p.CgoFiles, p.TestGoFiles, p.XTestGoFiles))
+}
+
+// constraintIgnoredGoFiles returns the list of Go files ignored for reasons
+// other than having a name beginning with '.' or '_'.
+func (p *Package) constraintIgnoredGoFiles() []string {
+	if len(p.IgnoredGoFiles) == 0 {
+		return nil
+	}
+	files := make([]string, 0, len(p.IgnoredGoFiles))
 	for _, f := range p.IgnoredGoFiles {
-		if f != "" && f[0] != '.' || f[0] != '_' {
-			extra = append(extra, f)
+		if f != "" && f[0] != '.' && f[0] != '_' {
+			files = append(files, f)
 		}
 	}
-	return p.mkAbs(str.StringList(extra, p.GoFiles, p.CgoFiles, p.TestGoFiles, p.XTestGoFiles))
+	return files
 }
 
 // usesSwig reports whether the package needs to run SWIG.
@@ -2037,7 +2053,7 @@ func Packages(args []string) []*Package {
 	var pkgs []*Package
 	for _, pkg := range PackagesAndErrors(args) {
 		if pkg.Error != nil {
-			base.Errorf("can't load package: %s", pkg.Error)
+			base.Errorf("%v", pkg.Error)
 			continue
 		}
 		pkgs = append(pkgs, pkg)
@@ -2077,13 +2093,13 @@ func PackagesAndErrors(patterns []string) []*Package {
 	for _, m := range matches {
 		for _, pkg := range m.Pkgs {
 			if pkg == "" {
-				panic(fmt.Sprintf("ImportPaths returned empty package for pattern %s", m.Pattern))
+				panic(fmt.Sprintf("ImportPaths returned empty package for pattern %s", m.Pattern()))
 			}
 			p := loadImport(pre, pkg, base.Cwd, nil, &stk, nil, 0)
-			p.Match = append(p.Match, m.Pattern)
+			p.Match = append(p.Match, m.Pattern())
 			p.Internal.CmdlinePkg = true
-			if m.Literal {
-				// Note: do not set = m.Literal unconditionally
+			if m.IsLiteral() {
+				// Note: do not set = m.IsLiteral unconditionally
 				// because maybe we'll see p matching both
 				// a literal and also a non-literal pattern.
 				p.Internal.CmdlinePkgLiteral = true
@@ -2092,6 +2108,25 @@ func PackagesAndErrors(patterns []string) []*Package {
 				continue
 			}
 			seenPkg[p] = true
+			pkgs = append(pkgs, p)
+		}
+
+		if len(m.Errs) > 0 {
+			// In addition to any packages that were actually resolved from the
+			// pattern, there was some error in resolving the pattern itself.
+			// Report it as a synthetic package.
+			p := new(Package)
+			p.ImportPath = m.Pattern()
+			p.Error = &PackageError{
+				ImportStack: nil, // The error arose from a pattern, not an import.
+				Err:         p.rewordError(m.Errs[0]),
+			}
+			p.Incomplete = true
+			p.Match = append(p.Match, m.Pattern())
+			p.Internal.CmdlinePkg = true
+			if m.IsLiteral() {
+				p.Internal.CmdlinePkgLiteral = true
+			}
 			pkgs = append(pkgs, p)
 		}
 	}
@@ -2129,7 +2164,7 @@ func PackagesForBuild(args []string) []*Package {
 	printed := map[*PackageError]bool{}
 	for _, pkg := range pkgs {
 		if pkg.Error != nil {
-			base.Errorf("can't load package: %s", pkg.Error)
+			base.Errorf("%v", pkg.Error)
 			printed[pkg.Error] = true
 		}
 		for _, err := range pkg.DepsErrors {
@@ -2139,7 +2174,7 @@ func PackagesForBuild(args []string) []*Package {
 			// Only print each once.
 			if !printed[err] {
 				printed[err] = true
-				base.Errorf("%s", err)
+				base.Errorf("%v", err)
 			}
 		}
 	}

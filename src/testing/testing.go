@@ -37,17 +37,17 @@
 // https://golang.org/cmd/go/#hdr-Testing_flags
 //
 // A sample benchmark function looks like this:
-//     func BenchmarkHello(b *testing.B) {
+//     func BenchmarkRandInt(b *testing.B) {
 //         for i := 0; i < b.N; i++ {
-//             fmt.Sprintf("hello")
+//             rand.Int()
 //         }
 //     }
 //
 // The benchmark function must run the target code b.N times.
 // During benchmark execution, b.N is adjusted until the benchmark function lasts
 // long enough to be timed reliably. The output
-//     BenchmarkHello    10000000    282 ns/op
-// means that the loop ran 10000000 times at a speed of 282 ns per loop.
+//     BenchmarkRandInt-8   	68453040	        17.8 ns/op
+// means that the loop ran 68453040 times at a speed of 17.8 ns per loop.
 //
 // If a benchmark needs some expensive setup before running, the timer
 // may be reset:
@@ -99,7 +99,7 @@
 // line order:
 //
 //     func ExamplePerm() {
-//         for _, value := range Perm(4) {
+//         for _, value := range Perm(5) {
 //             fmt.Println(value)
 //         }
 //         // Unordered output: 4
@@ -571,7 +571,6 @@ var _ TB = (*T)(nil)
 var _ TB = (*B)(nil)
 
 // T is a type passed to Test functions to manage test state and support formatted test logs.
-// Logs are accumulated during execution and dumped to standard output when done.
 //
 // A test ends when its Test function returns or calls any of the methods
 // FailNow, Fatal, Fatalf, SkipNow, Skip, or Skipf. Those methods, as well as
@@ -776,9 +775,9 @@ func (c *common) Helper() {
 	c.helpers[callerName(1)] = struct{}{}
 }
 
-// Cleanup registers a function to be called when the test finishes.
-// Cleanup functions will be called in last added, first called
-// order.
+// Cleanup registers a function to be called when the test and all its
+// subtests complete. Cleanup functions will be called in last added,
+// first called order.
 func (c *common) Cleanup(f func()) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -791,15 +790,34 @@ func (c *common) Cleanup(f func()) {
 	}
 }
 
+// panicHanding is an argument to runCleanup.
+type panicHandling int
+
+const (
+	normalPanic panicHandling = iota
+	recoverAndReturnPanic
+)
+
 // runCleanup is called at the end of the test.
-func (c *common) runCleanup() {
+// If catchPanic is true, this will catch panics, and return the recovered
+// value if any.
+func (c *common) runCleanup(ph panicHandling) (panicVal interface{}) {
 	c.mu.Lock()
 	cleanup := c.cleanup
 	c.cleanup = nil
 	c.mu.Unlock()
-	if cleanup != nil {
-		cleanup()
+	if cleanup == nil {
+		return nil
 	}
+
+	if ph == recoverAndReturnPanic {
+		defer func() {
+			panicVal = recover()
+		}()
+	}
+
+	cleanup()
+	return nil
 }
 
 // callerName gives the function name (qualified with a package path)
@@ -863,8 +881,8 @@ func (t *T) Parallel() {
 	t.raceErrors += -race.Errors()
 }
 
-// An internal type but exported because it is cross-package; part of the implementation
-// of the "go test" command.
+// InternalTest is an internal type but exported because it is cross-package;
+// it is part of the implementation of the "go test" command.
 type InternalTest struct {
 	Name string
 	F    func(*T)
@@ -902,18 +920,28 @@ func tRunner(t *T, fn func(t *T)) {
 				}
 			}
 		}
-		if err != nil {
+
+		doPanic := func(err interface{}) {
 			t.Fail()
+			if r := t.runCleanup(recoverAndReturnPanic); r != nil {
+				t.Logf("cleanup panicked with %v", r)
+			}
 			// Flush the output log up to the root before dying.
 			t.mu.Lock()
 			root := &t.common
 			for ; root.parent != nil; root = root.parent {
 				root.duration += time.Since(root.start)
 				fmt.Fprintf(root.parent.w, "--- FAIL: %s (%s)\n", root.name, fmtDuration(root.duration))
+				if r := root.parent.runCleanup(recoverAndReturnPanic); r != nil {
+					fmt.Fprintf(root.parent.w, "cleanup panicked with %v", r)
+				}
 				root.parent.mu.Lock()
 				io.Copy(root.parent.w, bytes.NewReader(root.output))
 			}
 			panic(err)
+		}
+		if err != nil {
+			doPanic(err)
 		}
 
 		t.duration += time.Since(t.start)
@@ -927,6 +955,12 @@ func tRunner(t *T, fn func(t *T)) {
 			// Wait for subtests to complete.
 			for _, sub := range t.sub {
 				<-sub.signal
+			}
+			cleanupStart := time.Now()
+			err := t.runCleanup(recoverAndReturnPanic)
+			t.duration += time.Since(cleanupStart)
+			if err != nil {
+				doPanic(err)
 			}
 			if !t.isParallel {
 				// Reacquire the count for sequential tests. See comment in Run.
@@ -947,7 +981,11 @@ func tRunner(t *T, fn func(t *T)) {
 		}
 		t.signal <- signal
 	}()
-	defer t.runCleanup()
+	defer func() {
+		if len(t.sub) == 0 {
+			t.runCleanup(normalPanic)
+		}
+	}()
 
 	t.start = time.Now()
 	t.raceErrors = -race.Errors()
@@ -1011,10 +1049,20 @@ func (t *T) Run(name string, f func(t *T)) bool {
 	return !t.failed
 }
 
+// Deadline reports the time at which the test binary will have
+// exceeded the timeout specified by the -timeout flag.
+//
+// The ok result is false if the -timeout flag indicates “no timeout” (0).
+func (t *T) Deadline() (deadline time.Time, ok bool) {
+	deadline = t.context.deadline
+	return deadline, !deadline.IsZero()
+}
+
 // testContext holds all fields that are common to all tests. This includes
 // synchronization primitives to run at most *parallel tests.
 type testContext struct {
-	match *matcher
+	match    *matcher
+	deadline time.Time
 
 	mu sync.Mutex
 
@@ -1157,9 +1205,9 @@ func (m *M) Run() int {
 
 	m.before()
 	defer m.after()
-	m.startAlarm()
+	deadline := m.startAlarm()
 	haveExamples = len(m.examples) > 0
-	testRan, testOk := runTests(m.deps.MatchString, m.tests)
+	testRan, testOk := runTests(m.deps.MatchString, m.tests, deadline)
 	exampleRan, exampleOk := runExamples(m.deps.MatchString, m.examples)
 	m.stopAlarm()
 	if !testRan && !exampleRan && *matchBenchmarks == "" {
@@ -1214,17 +1262,21 @@ func listTests(matchString func(pat, str string) (bool, error), tests []Internal
 	}
 }
 
-// An internal function but exported because it is cross-package; part of the implementation
-// of the "go test" command.
+// RunTests is an internal function but exported because it is cross-package;
+// it is part of the implementation of the "go test" command.
 func RunTests(matchString func(pat, str string) (bool, error), tests []InternalTest) (ok bool) {
-	ran, ok := runTests(matchString, tests)
+	var deadline time.Time
+	if *timeout > 0 {
+		deadline = time.Now().Add(*timeout)
+	}
+	ran, ok := runTests(matchString, tests, deadline)
 	if !ran && !haveExamples {
 		fmt.Fprintln(os.Stderr, "testing: warning: no tests to run")
 	}
 	return ok
 }
 
-func runTests(matchString func(pat, str string) (bool, error), tests []InternalTest) (ran, ok bool) {
+func runTests(matchString func(pat, str string) (bool, error), tests []InternalTest, deadline time.Time) (ran, ok bool) {
 	ok = true
 	for _, procs := range cpuList {
 		runtime.GOMAXPROCS(procs)
@@ -1233,6 +1285,7 @@ func runTests(matchString func(pat, str string) (bool, error), tests []InternalT
 				break
 			}
 			ctx := newTestContext(*parallel, newMatcher(matchString, *match, "-test.run"))
+			ctx.deadline = deadline
 			t := &T{
 				common: common{
 					signal:  make(chan bool),
@@ -1414,14 +1467,18 @@ func toOutputDir(path string) string {
 }
 
 // startAlarm starts an alarm if requested.
-func (m *M) startAlarm() {
-	if *timeout > 0 {
-		m.timer = time.AfterFunc(*timeout, func() {
-			m.after()
-			debug.SetTraceback("all")
-			panic(fmt.Sprintf("test timed out after %v", *timeout))
-		})
+func (m *M) startAlarm() time.Time {
+	if *timeout <= 0 {
+		return time.Time{}
 	}
+
+	deadline := time.Now().Add(*timeout)
+	m.timer = time.AfterFunc(*timeout, func() {
+		m.after()
+		debug.SetTraceback("all")
+		panic(fmt.Sprintf("test timed out after %v", *timeout))
+	})
+	return deadline
 }
 
 // stopAlarm turns off the alarm.

@@ -151,8 +151,9 @@ var pkgDeps = map[string][]string{
 	"syscall/js":                        {"L0"},
 	"internal/oserror":                  {"L0"},
 	"internal/syscall/unix":             {"L0", "syscall"},
-	"internal/syscall/windows":          {"L0", "syscall", "internal/syscall/windows/sysdll"},
+	"internal/syscall/windows":          {"L0", "syscall", "internal/syscall/windows/sysdll", "unicode/utf16"},
 	"internal/syscall/windows/registry": {"L0", "syscall", "internal/syscall/windows/sysdll", "unicode/utf16"},
+	"internal/syscall/execenv":          {"L0", "syscall", "internal/syscall/windows", "unicode/utf16"},
 	"time": {
 		// "L0" without the "io" package:
 		"errors",
@@ -168,12 +169,12 @@ var pkgDeps = map[string][]string{
 	},
 
 	"internal/cfg":     {"L0"},
-	"internal/poll":    {"L0", "internal/oserror", "internal/race", "syscall", "time", "unicode/utf16", "unicode/utf8", "internal/syscall/windows"},
+	"internal/poll":    {"L0", "internal/oserror", "internal/race", "syscall", "time", "unicode/utf16", "unicode/utf8", "internal/syscall/windows", "internal/syscall/unix"},
 	"internal/testlog": {"L0"},
-	"os":               {"L1", "os", "syscall", "time", "internal/oserror", "internal/poll", "internal/syscall/windows", "internal/syscall/unix", "internal/testlog"},
+	"os":               {"L1", "os", "syscall", "time", "internal/oserror", "internal/poll", "internal/syscall/windows", "internal/syscall/unix", "internal/syscall/execenv", "internal/testlog"},
 	"path/filepath":    {"L2", "os", "syscall", "internal/syscall/windows"},
 	"io/ioutil":        {"L2", "os", "path/filepath", "time"},
-	"os/exec":          {"L2", "os", "context", "path/filepath", "syscall"},
+	"os/exec":          {"L2", "os", "context", "path/filepath", "syscall", "internal/syscall/execenv"},
 	"os/signal":        {"L2", "os", "syscall"},
 
 	// OS enables basic operating system functionality,
@@ -383,8 +384,11 @@ var pkgDeps = map[string][]string{
 
 	// Mathematical crypto: dependencies on fmt (L4) and math/big.
 	// We could avoid some of the fmt, but math/big imports fmt anyway.
-	"crypto/dsa":      {"L4", "CRYPTO", "math/big"},
-	"crypto/ecdsa":    {"L4", "CRYPTO", "crypto/elliptic", "math/big", "encoding/asn1"},
+	"crypto/dsa": {"L4", "CRYPTO", "math/big"},
+	"crypto/ecdsa": {
+		"L4", "CRYPTO", "crypto/elliptic", "math/big",
+		"golang.org/x/crypto/cryptobyte", "golang.org/x/crypto/cryptobyte/asn1",
+	},
 	"crypto/elliptic": {"L4", "CRYPTO", "math/big"},
 	"crypto/rsa":      {"L4", "CRYPTO", "crypto/rand", "math/big"},
 
