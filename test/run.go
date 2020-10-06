@@ -459,7 +459,11 @@ func init() { checkShouldTest() }
 // or else the commands will rebuild any needed packages (like runtime)
 // over and over.
 func goGcflags() string {
-	return "-gcflags=" + os.Getenv("GO_GCFLAGS")
+	return "-gcflags=all=" + os.Getenv("GO_GCFLAGS")
+}
+
+func goGcflagsIsEmpty() bool {
+	return "" == os.Getenv("GO_GCFLAGS")
 }
 
 // run runs a test.
@@ -603,20 +607,23 @@ func (t *test) run() {
 		os.Setenv("GOARCH", runtime.GOARCH)
 	}
 
-	useTmp := true
-	runInDir := false
+	var (
+		runInDir        = t.tempDir
+		tempDirIsGOPATH = false
+	)
 	runcmd := func(args ...string) ([]byte, error) {
 		cmd := exec.Command(args[0], args[1:]...)
 		var buf bytes.Buffer
 		cmd.Stdout = &buf
 		cmd.Stderr = &buf
-		cmd.Env = os.Environ()
-		if useTmp {
-			cmd.Dir = t.tempDir
-			cmd.Env = envForDir(cmd.Dir)
+		cmd.Env = append(os.Environ(), "GOENV=off", "GOFLAGS=")
+		if runInDir != "" {
+			cmd.Dir = runInDir
+			// Set PWD to match Dir to speed up os.Getwd in the child process.
+			cmd.Env = append(cmd.Env, "PWD="+cmd.Dir)
 		}
-		if runInDir {
-			cmd.Dir = t.goDirName()
+		if tempDirIsGOPATH {
+			cmd.Env = append(cmd.Env, "GOPATH="+t.tempDir)
 		}
 
 		var err error
@@ -667,7 +674,25 @@ func (t *test) run() {
 			}
 			// -S=2 forces outermost line numbers when disassembling inlined code.
 			cmdline := []string{"build", "-gcflags", "-S=2"}
-			cmdline = append(cmdline, flags...)
+
+			// Append flags, but don't override -gcflags=-S=2; add to it instead.
+			for i := 0; i < len(flags); i++ {
+				flag := flags[i]
+				switch {
+				case strings.HasPrefix(flag, "-gcflags="):
+					cmdline[2] += " " + strings.TrimPrefix(flag, "-gcflags=")
+				case strings.HasPrefix(flag, "--gcflags="):
+					cmdline[2] += " " + strings.TrimPrefix(flag, "--gcflags=")
+				case flag == "-gcflags", flag == "--gcflags":
+					i++
+					if i < len(flags) {
+						cmdline[2] += " " + flags[i]
+					}
+				default:
+					cmdline = append(cmdline, flag)
+				}
+			}
+
 			cmdline = append(cmdline, long)
 			cmd := exec.Command(goTool(), cmdline...)
 			cmd.Env = append(os.Environ(), env.Environ()...)
@@ -841,13 +866,31 @@ func (t *test) run() {
 		}
 
 	case "runindir":
-		// run "go run ." in t.goDirName()
-		// It's used when test requires go build and run the binary success.
-		// Example when long import path require (see issue29612.dir) or test
-		// contains assembly file (see issue15609.dir).
-		// Verify the expected output.
-		useTmp = false
-		runInDir = true
+		// Make a shallow copy of t.goDirName() in its own module and GOPATH, and
+		// run "go run ." in it. The module path (and hence import path prefix) of
+		// the copy is equal to the basename of the source directory.
+		//
+		// It's used when test a requires a full 'go build' in order to compile
+		// the sources, such as when importing multiple packages (issue29612.dir)
+		// or compiling a package containing assembly files (see issue15609.dir),
+		// but still needs to be run to verify the expected output.
+		tempDirIsGOPATH = true
+		srcDir := t.goDirName()
+		modName := filepath.Base(srcDir)
+		gopathSrcDir := filepath.Join(t.tempDir, "src", modName)
+		runInDir = gopathSrcDir
+
+		if err := overlayDir(gopathSrcDir, srcDir); err != nil {
+			t.err = err
+			return
+		}
+
+		modFile := fmt.Sprintf("module %s\ngo 1.14\n", modName)
+		if err := ioutil.WriteFile(filepath.Join(gopathSrcDir, "go.mod"), []byte(modFile), 0666); err != nil {
+			t.err = err
+			return
+		}
+
 		cmd := []string{goTool(), "run", goGcflags()}
 		if *linkshared {
 			cmd = append(cmd, "-linkshared")
@@ -981,10 +1024,10 @@ func (t *test) run() {
 		// Run Go file if no special go command flags are provided;
 		// otherwise build an executable and run it.
 		// Verify the output.
-		useTmp = false
+		runInDir = ""
 		var out []byte
 		var err error
-		if len(flags)+len(args) == 0 && goGcflags() == "" && !*linkshared {
+		if len(flags)+len(args) == 0 && goGcflagsIsEmpty() && !*linkshared && goarch == runtime.GOARCH && goos == runtime.GOOS {
 			// If we're not using special go command flags,
 			// skip all the go command machinery.
 			// This avoids any time the go command would
@@ -1029,7 +1072,7 @@ func (t *test) run() {
 		defer func() {
 			<-rungatec
 		}()
-		useTmp = false
+		runInDir = ""
 		cmd := []string{goTool(), "run", goGcflags()}
 		if *linkshared {
 			cmd = append(cmd, "-linkshared")
@@ -1062,7 +1105,7 @@ func (t *test) run() {
 	case "errorcheckoutput":
 		// Run Go file and write its output into temporary Go file.
 		// Compile and errorCheck generated Go file.
-		useTmp = false
+		runInDir = ""
 		cmd := []string{goTool(), "run", goGcflags()}
 		if *linkshared {
 			cmd = append(cmd, "-linkshared")
@@ -1446,7 +1489,7 @@ var (
 	// value[0] is the variant-changing environment variable, and values[1:]
 	// are the supported variants.
 	archVariants = map[string][]string{
-		"386":     {"GO386", "387", "sse2"},
+		"386":     {},
 		"amd64":   {},
 		"arm":     {"GOARM", "5", "6", "7"},
 		"arm64":   {},
@@ -1468,12 +1511,12 @@ type wantedAsmOpcode struct {
 	found    bool           // true if the opcode check matched at least one in the output
 }
 
-// A build environment triplet separated by slashes (eg: linux/386/sse2).
+// A build environment triplet separated by slashes (eg: linux/arm/7).
 // The third field can be empty if the arch does not support variants (eg: "plan9/amd64/")
 type buildEnv string
 
 // Environ returns the environment it represents in cmd.Environ() "key=val" format
-// For instance, "linux/386/sse2".Environ() returns {"GOOS=linux", "GOARCH=386", "GO386=sse2"}
+// For instance, "linux/arm/7".Environ() returns {"GOOS=linux", "GOARCH=arm", "GOARM=7"}
 func (b buildEnv) Environ() []string {
 	fields := strings.Split(string(b), "/")
 	if len(fields) != 3 {
@@ -1528,11 +1571,11 @@ func (t *test) wantedAsmOpcodes(fn string) asmChecks {
 
 			var arch, subarch, os string
 			switch {
-			case archspec[2] != "": // 3 components: "linux/386/sse2"
+			case archspec[2] != "": // 3 components: "linux/arm/7"
 				os, arch, subarch = archspec[0], archspec[1][1:], archspec[2][1:]
-			case archspec[1] != "": // 2 components: "386/sse2"
+			case archspec[1] != "": // 2 components: "arm/7"
 				os, arch, subarch = "linux", archspec[0], archspec[1][1:]
-			default: // 1 component: "386"
+			default: // 1 component: "arm"
 				os, arch, subarch = "linux", archspec[0], ""
 				if arch == "wasm" {
 					os = "js"
@@ -1730,27 +1773,73 @@ func checkShouldTest() {
 	assert(shouldTest("// +build !windows !plan9", "windows", "amd64"))
 }
 
-// envForDir returns a copy of the environment
-// suitable for running in the given directory.
-// The environment is the current process's environment
-// but with an updated $PWD, so that an os.Getwd in the
-// child will be faster.
-func envForDir(dir string) []string {
-	env := os.Environ()
-	for i, kv := range env {
-		if strings.HasPrefix(kv, "PWD=") {
-			env[i] = "PWD=" + dir
-			return env
-		}
-	}
-	env = append(env, "PWD="+dir)
-	return env
-}
-
 func getenv(key, def string) string {
 	value := os.Getenv(key)
 	if value != "" {
 		return value
 	}
 	return def
+}
+
+// overlayDir makes a minimal-overhead copy of srcRoot in which new files may be added.
+func overlayDir(dstRoot, srcRoot string) error {
+	dstRoot = filepath.Clean(dstRoot)
+	if err := os.MkdirAll(dstRoot, 0777); err != nil {
+		return err
+	}
+
+	srcRoot, err := filepath.Abs(srcRoot)
+	if err != nil {
+		return err
+	}
+
+	return filepath.Walk(srcRoot, func(srcPath string, info os.FileInfo, err error) error {
+		if err != nil || srcPath == srcRoot {
+			return err
+		}
+
+		suffix := strings.TrimPrefix(srcPath, srcRoot)
+		for len(suffix) > 0 && suffix[0] == filepath.Separator {
+			suffix = suffix[1:]
+		}
+		dstPath := filepath.Join(dstRoot, suffix)
+
+		perm := info.Mode() & os.ModePerm
+		if info.Mode()&os.ModeSymlink != 0 {
+			info, err = os.Stat(srcPath)
+			if err != nil {
+				return err
+			}
+			perm = info.Mode() & os.ModePerm
+		}
+
+		// Always copy directories (don't symlink them).
+		// If we add a file in the overlay, we don't want to add it in the original.
+		if info.IsDir() {
+			return os.MkdirAll(dstPath, perm|0200)
+		}
+
+		// If the OS supports symlinks, use them instead of copying bytes.
+		if err := os.Symlink(srcPath, dstPath); err == nil {
+			return nil
+		}
+
+		// Otherwise, copy the bytes.
+		src, err := os.Open(srcPath)
+		if err != nil {
+			return err
+		}
+		defer src.Close()
+
+		dst, err := os.OpenFile(dstPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+		if err != nil {
+			return err
+		}
+
+		_, err = io.Copy(dst, src)
+		if closeErr := dst.Close(); err == nil {
+			err = closeErr
+		}
+		return err
+	})
 }

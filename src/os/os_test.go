@@ -52,9 +52,9 @@ var sysdir = func() *sysDir {
 				"libpowermanager.so",
 			},
 		}
-	case "darwin":
+	case "darwin", "ios":
 		switch runtime.GOARCH {
-		case "arm", "arm64":
+		case "arm64":
 			wd, err := syscall.Getwd()
 			if err != nil {
 				wd = err.Error()
@@ -144,9 +144,9 @@ func localTmp() string {
 	switch runtime.GOOS {
 	case "android", "windows":
 		return TempDir()
-	case "darwin":
+	case "darwin", "ios":
 		switch runtime.GOARCH {
-		case "arm", "arm64":
+		case "arm64":
 			return TempDir()
 		}
 	}
@@ -481,9 +481,9 @@ func TestReaddirnamesOneAtATime(t *testing.T) {
 	switch runtime.GOOS {
 	case "android":
 		dir = "/system/bin"
-	case "darwin":
+	case "darwin", "ios":
 		switch runtime.GOARCH {
-		case "arm", "arm64":
+		case "arm64":
 			wd, err := Getwd()
 			if err != nil {
 				t.Fatal(err)
@@ -687,6 +687,10 @@ func TestReaddirOfFile(t *testing.T) {
 	names, err := reg.Readdirnames(-1)
 	if err == nil {
 		t.Error("Readdirnames succeeded; want non-nil error")
+	}
+	var pe *PathError
+	if !errors.As(err, &pe) || pe.Path != f.Name() {
+		t.Errorf("Readdirnames returned %q; want a PathError with path %q", err, f.Name())
 	}
 	if len(names) > 0 {
 		t.Errorf("unexpected dir names in regular file: %q", names)
@@ -1095,29 +1099,34 @@ func checkMode(t *testing.T, path string, mode FileMode) {
 	if err != nil {
 		t.Fatalf("Stat %q (looking for mode %#o): %s", path, mode, err)
 	}
-	if dir.Mode()&0777 != mode {
+	if dir.Mode()&ModePerm != mode {
 		t.Errorf("Stat %q: mode %#o want %#o", path, dir.Mode(), mode)
 	}
 }
 
 func TestChmod(t *testing.T) {
-	// Chmod is not supported under windows.
-	if runtime.GOOS == "windows" {
-		return
-	}
 	f := newFile("TestChmod", t)
 	defer Remove(f.Name())
 	defer f.Close()
+	// Creation mode is read write
 
-	if err := Chmod(f.Name(), 0456); err != nil {
-		t.Fatalf("chmod %s 0456: %s", f.Name(), err)
+	fm := FileMode(0456)
+	if runtime.GOOS == "windows" {
+		fm = FileMode(0444) // read-only file
 	}
-	checkMode(t, f.Name(), 0456)
+	if err := Chmod(f.Name(), fm); err != nil {
+		t.Fatalf("chmod %s %#o: %s", f.Name(), fm, err)
+	}
+	checkMode(t, f.Name(), fm)
 
-	if err := f.Chmod(0123); err != nil {
-		t.Fatalf("chmod %s 0123: %s", f.Name(), err)
+	fm = FileMode(0123)
+	if runtime.GOOS == "windows" {
+		fm = FileMode(0666) // read-write file
 	}
-	checkMode(t, f.Name(), 0123)
+	if err := f.Chmod(fm); err != nil {
+		t.Fatalf("chmod %s %#o: %s", f.Name(), fm, err)
+	}
+	checkMode(t, f.Name(), fm)
 }
 
 func checkSize(t *testing.T, f *File, size int64) {
@@ -1295,9 +1304,9 @@ func TestChdirAndGetwd(t *testing.T) {
 		dirs = []string{"/system/bin"}
 	case "plan9":
 		dirs = []string{"/", "/usr"}
-	case "darwin":
+	case "darwin", "ios":
 		switch runtime.GOARCH {
-		case "arm", "arm64":
+		case "arm64":
 			dirs = nil
 			for _, d := range []string{"d1", "d2"} {
 				dir, err := ioutil.TempDir("", d)
@@ -2525,5 +2534,48 @@ func TestReaddirSmallSeek(t *testing.T) {
 	}
 	if len(names2) != 3 {
 		t.Fatalf("first names: %v, second names: %v", names1, names2)
+	}
+}
+
+// isDeadlineExceeded reports whether err is or wraps os.ErrDeadlineExceeded.
+// We also check that the error has a Timeout method that returns true.
+func isDeadlineExceeded(err error) bool {
+	if !IsTimeout(err) {
+		return false
+	}
+	if !errors.Is(err, ErrDeadlineExceeded) {
+		return false
+	}
+	return true
+}
+
+// Test that opening a file does not change its permissions.  Issue 38225.
+func TestOpenFileKeepsPermissions(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	name := filepath.Join(dir, "x")
+	f, err := Create(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Error(err)
+	}
+	f, err = OpenFile(name, O_WRONLY|O_CREATE|O_TRUNC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := f.Stat(); err != nil {
+		t.Error(err)
+	} else if fi.Mode()&0222 == 0 {
+		t.Errorf("f.Stat.Mode after OpenFile is %v, should be writable", fi.Mode())
+	}
+	if err := f.Close(); err != nil {
+		t.Error(err)
+	}
+	if fi, err := Stat(name); err != nil {
+		t.Error(err)
+	} else if fi.Mode()&0222 == 0 {
+		t.Errorf("Stat after OpenFile is %v, should be writable", fi.Mode())
 	}
 }

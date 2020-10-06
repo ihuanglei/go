@@ -143,6 +143,14 @@ func IndexAny(s, chars string) int {
 		// Avoid scanning all of s.
 		return -1
 	}
+	if len(chars) == 1 {
+		// Avoid scanning all of s.
+		r := rune(chars[0])
+		if r >= utf8.RuneSelf {
+			r = utf8.RuneError
+		}
+		return IndexRune(s, r)
+	}
 	if len(s) > 8 {
 		if as, isASCII := makeASCIISet(chars); isASCII {
 			for i := 0; i < len(s); i++ {
@@ -154,10 +162,8 @@ func IndexAny(s, chars string) int {
 		}
 	}
 	for i, c := range s {
-		for _, m := range chars {
-			if c == m {
-				return i
-			}
+		if IndexRune(chars, c) >= 0 {
+			return i
 		}
 	}
 	return -1
@@ -171,6 +177,16 @@ func LastIndexAny(s, chars string) int {
 		// Avoid scanning all of s.
 		return -1
 	}
+	if len(s) == 1 {
+		rc := rune(s[0])
+		if rc >= utf8.RuneSelf {
+			rc = utf8.RuneError
+		}
+		if IndexRune(chars, rc) >= 0 {
+			return 0
+		}
+		return -1
+	}
 	if len(s) > 8 {
 		if as, isASCII := makeASCIISet(chars); isASCII {
 			for i := len(s) - 1; i >= 0; i-- {
@@ -181,13 +197,25 @@ func LastIndexAny(s, chars string) int {
 			return -1
 		}
 	}
+	if len(chars) == 1 {
+		rc := rune(chars[0])
+		if rc >= utf8.RuneSelf {
+			rc = utf8.RuneError
+		}
+		for i := len(s); i > 0; {
+			r, size := utf8.DecodeLastRuneInString(s[:i])
+			i -= size
+			if rc == r {
+				return i
+			}
+		}
+		return -1
+	}
 	for i := len(s); i > 0; {
 		r, size := utf8.DecodeLastRuneInString(s[:i])
 		i -= size
-		for _, c := range chars {
-			if r == c {
-				return i
-			}
+		if IndexRune(chars, r) >= 0 {
+			return i
 		}
 	}
 	return -1
@@ -341,8 +369,9 @@ func Fields(s string) []string {
 // FieldsFunc splits the string s at each run of Unicode code points c satisfying f(c)
 // and returns an array of slices of s. If all code points in s satisfy f(c) or the
 // string is empty, an empty slice is returned.
-// FieldsFunc makes no guarantees about the order in which it calls f(c).
-// If f does not return consistent results for a given c, FieldsFunc may crash.
+//
+// FieldsFunc makes no guarantees about the order in which it calls f(c)
+// and assumes that f always returns the same value for a given c.
 func FieldsFunc(s string, f func(rune) bool) []string {
 	// A span is used to record a slice of s of the form s[start:end].
 	// The start index is inclusive and the end index is exclusive.
@@ -353,25 +382,29 @@ func FieldsFunc(s string, f func(rune) bool) []string {
 	spans := make([]span, 0, 32)
 
 	// Find the field start and end indices.
-	wasField := false
-	fromIndex := 0
-	for i, rune := range s {
+	// Doing this in a separate pass (rather than slicing the string s
+	// and collecting the result substrings right away) is significantly
+	// more efficient, possibly due to cache effects.
+	start := -1 // valid span start if >= 0
+	for end, rune := range s {
 		if f(rune) {
-			if wasField {
-				spans = append(spans, span{start: fromIndex, end: i})
-				wasField = false
+			if start >= 0 {
+				spans = append(spans, span{start, end})
+				// Set start to a negative value.
+				// Note: using -1 here consistently and reproducibly
+				// slows down this code by a several percent on amd64.
+				start = ^start
 			}
 		} else {
-			if !wasField {
-				fromIndex = i
-				wasField = true
+			if start < 0 {
+				start = end
 			}
 		}
 	}
 
 	// Last field might end at EOF.
-	if wasField {
-		spans = append(spans, span{fromIndex, len(s)})
+	if start >= 0 {
+		spans = append(spans, span{start, len(s)})
 	}
 
 	// Create strings from recorded field indices.
@@ -800,7 +833,7 @@ func makeCutsetFunc(cutset string) func(rune) bool {
 
 // Trim returns a slice of the string s with all leading and
 // trailing Unicode code points contained in cutset removed.
-func Trim(s string, cutset string) string {
+func Trim(s, cutset string) string {
 	if s == "" || cutset == "" {
 		return s
 	}
@@ -811,7 +844,7 @@ func Trim(s string, cutset string) string {
 // Unicode code points contained in cutset removed.
 //
 // To remove a prefix, use TrimPrefix instead.
-func TrimLeft(s string, cutset string) string {
+func TrimLeft(s, cutset string) string {
 	if s == "" || cutset == "" {
 		return s
 	}
@@ -822,7 +855,7 @@ func TrimLeft(s string, cutset string) string {
 // Unicode code points contained in cutset removed.
 //
 // To remove a suffix, use TrimSuffix instead.
-func TrimRight(s string, cutset string) string {
+func TrimRight(s, cutset string) string {
 	if s == "" || cutset == "" {
 		return s
 	}
@@ -901,8 +934,8 @@ func Replace(s, old, new string, n int) string {
 	}
 
 	// Apply replacements to buffer.
-	t := make([]byte, len(s)+n*(len(new)-len(old)))
-	w := 0
+	var b Builder
+	b.Grow(len(s) + n*(len(new)-len(old)))
 	start := 0
 	for i := 0; i < n; i++ {
 		j := start
@@ -914,12 +947,12 @@ func Replace(s, old, new string, n int) string {
 		} else {
 			j += Index(s[start:], old)
 		}
-		w += copy(t[w:], s[start:j])
-		w += copy(t[w:], new)
+		b.WriteString(s[start:j])
+		b.WriteString(new)
 		start = j + len(old)
 	}
-	w += copy(t[w:], s[start:])
-	return string(t[0:w])
+	b.WriteString(s[start:])
+	return b.String()
 }
 
 // ReplaceAll returns a copy of the string s with all
@@ -1016,11 +1049,11 @@ func Index(s, substr string) int {
 			if s[i] != c0 {
 				// IndexByte is faster than bytealg.IndexString, so use it as long as
 				// we're not getting lots of false positives.
-				o := IndexByte(s[i:t], c0)
+				o := IndexByte(s[i+1:t], c0)
 				if o < 0 {
 					return -1
 				}
-				i += o
+				i += o + 1
 			}
 			if s[i+1] == c1 && s[i:i+n] == substr {
 				return i
@@ -1045,11 +1078,11 @@ func Index(s, substr string) int {
 	fails := 0
 	for i < t {
 		if s[i] != c0 {
-			o := IndexByte(s[i:t], c0)
+			o := IndexByte(s[i+1:t], c0)
 			if o < 0 {
 				return -1
 			}
-			i += o
+			i += o + 1
 		}
 		if s[i+1] == c1 && s[i:i+n] == substr {
 			return i

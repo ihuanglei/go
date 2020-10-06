@@ -202,12 +202,6 @@ var genericOps = []opData{
 	{name: "Leq32F", argLength: 2, typ: "Bool"},
 	{name: "Leq64F", argLength: 2, typ: "Bool"},
 
-	{name: "Greater32F", argLength: 2, typ: "Bool"},
-	{name: "Greater64F", argLength: 2, typ: "Bool"},
-
-	{name: "Geq32F", argLength: 2, typ: "Bool"},
-	{name: "Geq64F", argLength: 2, typ: "Bool"},
-
 	// the type of a CondSelect is the same as the type of its first
 	// two arguments, which should be register-width scalars; the third
 	// argument should be a boolean
@@ -352,6 +346,7 @@ var genericOps = []opData{
 
 	// Memory operations
 	{name: "Load", argLength: 2},                          // Load from arg0.  arg1=memory
+	{name: "Dereference", argLength: 2},                   // Load from arg0.  arg1=memory.  Helper op for arg/result passing, result is an otherwise not-SSA-able "value".
 	{name: "Store", argLength: 3, typ: "Mem", aux: "Typ"}, // Store arg1 to arg0.  arg2=memory, aux=type.  Returns memory.
 	// The source and destination of Move may overlap in some cases. See e.g.
 	// memmove inlining in generic.rules. When inlineablememmovesize (in ../rewrite.go)
@@ -378,20 +373,28 @@ var genericOps = []opData{
 	// arch-dependent), and is not a safe-point.
 	{name: "WB", argLength: 3, typ: "Mem", aux: "Sym", symEffect: "None"}, // arg0=destptr, arg1=srcptr, arg2=mem, aux=runtime.gcWriteBarrier
 
+	{name: "HasCPUFeature", argLength: 0, typ: "bool", aux: "Sym", symEffect: "None"}, // aux=place that this feature flag can be loaded from
+
 	// PanicBounds and PanicExtend generate a runtime panic.
 	// Their arguments provide index values to use in panic messages.
 	// Both PanicBounds and PanicExtend have an AuxInt value from the BoundsKind type (in ../op.go).
 	// PanicBounds' index is int sized.
 	// PanicExtend's index is int64 sized. (PanicExtend is only used on 32-bit archs.)
-	{name: "PanicBounds", argLength: 3, aux: "Int64", typ: "Mem"}, // arg0=idx, arg1=len, arg2=mem, returns memory.
-	{name: "PanicExtend", argLength: 4, aux: "Int64", typ: "Mem"}, // arg0=idxHi, arg1=idxLo, arg2=len, arg3=mem, returns memory.
+	{name: "PanicBounds", argLength: 3, aux: "Int64", typ: "Mem", call: true}, // arg0=idx, arg1=len, arg2=mem, returns memory.
+	{name: "PanicExtend", argLength: 4, aux: "Int64", typ: "Mem", call: true}, // arg0=idxHi, arg1=idxLo, arg2=len, arg3=mem, returns memory.
 
 	// Function calls. Arguments to the call have already been written to the stack.
 	// Return values appear on the stack. The method receiver, if any, is treated
 	// as a phantom first argument.
-	{name: "ClosureCall", argLength: 3, aux: "Int64", call: true},                    // arg0=code pointer, arg1=context ptr, arg2=memory.  auxint=arg size.  Returns memory.
-	{name: "StaticCall", argLength: 1, aux: "SymOff", call: true, symEffect: "None"}, // call function aux.(*obj.LSym), arg0=memory.  auxint=arg size.  Returns memory.
-	{name: "InterCall", argLength: 2, aux: "Int64", call: true},                      // interface call.  arg0=code pointer, arg1=memory, auxint=arg size.  Returns memory.
+	// TODO(josharian): ClosureCall and InterCall should have Int32 aux
+	// to match StaticCall's 32 bit arg size limit.
+	// TODO(drchase,josharian): could the arg size limit be bundled into the rules for CallOff?
+	{name: "ClosureCall", argLength: 3, aux: "CallOff", call: true},    // arg0=code pointer, arg1=context ptr, arg2=memory.  auxint=arg size.  Returns memory.
+	{name: "StaticCall", argLength: 1, aux: "CallOff", call: true},     // call function aux.(*obj.LSym), arg0=memory.  auxint=arg size.  Returns memory.
+	{name: "InterCall", argLength: 2, aux: "CallOff", call: true},      // interface call.  arg0=code pointer, arg1=memory, auxint=arg size.  Returns memory.
+	{name: "ClosureLECall", argLength: -1, aux: "CallOff", call: true}, // late-expanded closure call. arg0=code pointer, arg1=context ptr,  arg2..argN-1 are inputs, argN is mem. auxint = arg size. Result is tuple of result(s), plus mem.
+	{name: "StaticLECall", argLength: -1, aux: "CallOff", call: true},  // late-expanded static call function aux.(*ssa.AuxCall.Fn). arg0..argN-1 are inputs, argN is mem. auxint = arg size. Result is tuple of result(s), plus mem.
+	{name: "InterLECall", argLength: -1, aux: "CallOff", call: true},   // late-expanded interface call. arg0=code pointer, arg1..argN-1 are inputs, argN is mem. auxint = arg size. Result is tuple of result(s), plus mem.
 
 	// Conversions: signed extensions, zero (unsigned) extensions, truncations
 	{name: "SignExt8to16", argLength: 1, typ: "Int16"},
@@ -520,6 +523,9 @@ var genericOps = []opData{
 	{name: "Zeromask", argLength: 1, typ: "UInt32"}, // 0 if arg0 == 0, 0xffffffff if arg0 != 0
 	{name: "Slicemask", argLength: 1},               // 0 if arg0 == 0, -1 if arg0 > 0, undef if arg0<0. Type is native int size.
 
+	{name: "SpectreIndex", argLength: 2},      // arg0 if 0 <= arg0 < arg1, 0 otherwise. Type is native int size.
+	{name: "SpectreSliceIndex", argLength: 2}, // arg0 if 0 <= arg0 <= arg1, 0 otherwise. Type is native int size.
+
 	{name: "Cvt32Uto32F", argLength: 1}, // uint32 -> float32, only used on 32-bit arch
 	{name: "Cvt32Uto64F", argLength: 1}, // uint32 -> float64, only used on 32-bit arch
 	{name: "Cvt32Fto32U", argLength: 1}, // float32 -> uint32, only used on 32-bit arch
@@ -530,8 +536,10 @@ var genericOps = []opData{
 	{name: "Cvt64Fto64U", argLength: 1}, // float64 -> uint64, only used on archs that has the instruction
 
 	// pseudo-ops for breaking Tuple
-	{name: "Select0", argLength: 1, zeroWidth: true}, // the first component of a tuple
-	{name: "Select1", argLength: 1, zeroWidth: true}, // the second component of a tuple
+	{name: "Select0", argLength: 1, zeroWidth: true},  // the first component of a tuple
+	{name: "Select1", argLength: 1, zeroWidth: true},  // the second component of a tuple
+	{name: "SelectN", argLength: 1, aux: "Int64"},     // arg0=tuple, auxint=field index.  Returns the auxint'th member.
+	{name: "SelectNAddr", argLength: 1, aux: "Int64"}, // arg0=tuple, auxint=field index.  Returns the address of auxint'th member. Used for un-SSA-able result types.
 
 	// Atomic operations used for semantically inlining runtime/internal/atomic.
 	// Atomic loads return a new memory so that the loads are properly ordered

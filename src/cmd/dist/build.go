@@ -30,7 +30,6 @@ var (
 	gohostos         string
 	goos             string
 	goarm            string
-	go386            string
 	gomips           string
 	gomips64         string
 	goppc64          string
@@ -80,6 +79,7 @@ var okgoos = []string{
 	"darwin",
 	"dragonfly",
 	"illumos",
+	"ios",
 	"js",
 	"linux",
 	"android",
@@ -140,16 +140,6 @@ func xinit() {
 		b = xgetgoarm()
 	}
 	goarm = b
-
-	b = os.Getenv("GO386")
-	if b == "" {
-		if cansse2() {
-			b = "sse2"
-		} else {
-			b = "387"
-		}
-	}
-	go386 = b
 
 	b = os.Getenv("GOMIPS")
 	if b == "" {
@@ -222,7 +212,6 @@ func xinit() {
 	defaultldso = os.Getenv("GO_LDSO")
 
 	// For tools being invoked but also for os.ExpandEnv.
-	os.Setenv("GO386", go386)
 	os.Setenv("GOARCH", goarch)
 	os.Setenv("GOARM", goarm)
 	os.Setenv("GOHOSTARCH", gohostarch)
@@ -824,6 +813,7 @@ func runInstall(pkg string, ch chan struct{}) {
 		"-D", "GOOS_" + goos,
 		"-D", "GOARCH_" + goarch,
 		"-D", "GOOS_GOARCH_" + goos + "_" + goarch,
+		"-p", pkg,
 	}
 	if goarch == "mips" || goarch == "mipsle" {
 		// Define GOMIPS_value from gomips.
@@ -969,7 +959,10 @@ func matchtag(tag string) bool {
 		}
 		return !matchtag(tag[1:])
 	}
-	return tag == "gc" || tag == goos || tag == goarch || tag == "cmd_go_bootstrap" || tag == "go1.1" || (goos == "android" && tag == "linux") || (goos == "illumos" && tag == "solaris")
+	return tag == "gc" || tag == goos || tag == goarch || tag == "cmd_go_bootstrap" || tag == "go1.1" ||
+		(goos == "android" && tag == "linux") ||
+		(goos == "illumos" && tag == "solaris") ||
+		(goos == "ios" && tag == "darwin")
 }
 
 // shouldbuild reports whether we should build this file.
@@ -983,7 +976,7 @@ func shouldbuild(file, pkg string) bool {
 	name := filepath.Base(file)
 	excluded := func(list []string, ok string) bool {
 		for _, x := range list {
-			if x == ok || (ok == "android" && x == "linux") || (ok == "illumos" && x == "solaris") {
+			if x == ok || (ok == "android" && x == "linux") || (ok == "illumos" && x == "solaris") || (ok == "ios" && x == "darwin") {
 				continue
 			}
 			i := strings.Index(name, x)
@@ -1160,9 +1153,6 @@ func cmdenv() {
 	if goarch == "arm" {
 		xprintf(format, "GOARM", goarm)
 	}
-	if goarch == "386" {
-		xprintf(format, "GO386", go386)
-	}
 	if goarch == "mips" || goarch == "mipsle" {
 		xprintf(format, "GOMIPS", gomips)
 	}
@@ -1208,7 +1198,7 @@ func timelog(op, name string) {
 		}
 		i := strings.Index(s, " start")
 		if i < 0 {
-			log.Fatalf("time log %s does not begin with start line", os.Getenv("GOBULDTIMELOGFILE"))
+			log.Fatalf("time log %s does not begin with start line", os.Getenv("GOBUILDTIMELOGFILE"))
 		}
 		t, err := time.Parse(time.UnixDate, s[:i])
 		if err != nil {
@@ -1461,9 +1451,9 @@ func wrapperPathFor(goos, goarch string) string {
 		if gohostos != "android" {
 			return pathf("%s/misc/android/go_android_exec.go", goroot)
 		}
-	case goos == "darwin" && (goarch == "arm" || goarch == "arm64"):
-		if gohostos != "darwin" || (gohostarch != "arm" && gohostarch != "arm64") {
-			return pathf("%s/misc/ios/go_darwin_arm_exec.go", goroot)
+	case (goos == "darwin" || goos == "ios") && goarch == "arm64":
+		if gohostos != "darwin" || gohostarch != "arm64" {
+			return pathf("%s/misc/ios/go_ios_exec.go", goroot)
 		}
 	}
 	return ""
@@ -1515,9 +1505,7 @@ func checkNotStale(goBinary string, targets ...string) {
 // by 'go tool dist list'.
 var cgoEnabled = map[string]bool{
 	"aix/ppc64":       true,
-	"darwin/386":      false, // Issue 31751
 	"darwin/amd64":    true,
-	"darwin/arm":      true,
 	"darwin/arm64":    true,
 	"dragonfly/amd64": true,
 	"freebsd/386":     true,
@@ -1542,6 +1530,7 @@ var cgoEnabled = map[string]bool{
 	"android/amd64":   true,
 	"android/arm":     true,
 	"android/arm64":   true,
+	"ios/arm64":       true,
 	"js/wasm":         false,
 	"netbsd/386":      true,
 	"netbsd/amd64":    true,

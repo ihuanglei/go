@@ -252,7 +252,9 @@ func (t Time) Before(u Time) bool {
 	if t.wall&u.wall&hasMonotonic != 0 {
 		return t.ext < u.ext
 	}
-	return t.sec() < u.sec() || t.sec() == u.sec() && t.nsec() < u.nsec()
+	ts := t.sec()
+	us := u.sec()
+	return ts < us || ts == us && t.nsec() < u.nsec()
 }
 
 // Equal reports whether t and u represent the same time instant.
@@ -285,25 +287,10 @@ const (
 	December
 )
 
-var months = [...]string{
-	"January",
-	"February",
-	"March",
-	"April",
-	"May",
-	"June",
-	"July",
-	"August",
-	"September",
-	"October",
-	"November",
-	"December",
-}
-
 // String returns the English name of the month ("January", "February", ...).
 func (m Month) String() string {
 	if January <= m && m <= December {
-		return months[m-1]
+		return longMonthNames[m-1]
 	}
 	buf := make([]byte, 20)
 	n := fmtInt(buf, uint64(m))
@@ -323,20 +310,10 @@ const (
 	Saturday
 )
 
-var days = [...]string{
-	"Sunday",
-	"Monday",
-	"Tuesday",
-	"Wednesday",
-	"Thursday",
-	"Friday",
-	"Saturday",
-}
-
 // String returns the English name of the day ("Sunday", "Monday", ...).
 func (d Weekday) String() string {
 	if Sunday <= d && d <= Saturday {
-		return days[d]
+		return longDayNames[d]
 	}
 	buf := make([]byte, 20)
 	n := fmtInt(buf, uint64(d))
@@ -1042,6 +1019,34 @@ func daysIn(m Month, year int) int {
 	return int(daysBefore[m] - daysBefore[m-1])
 }
 
+// daysSinceEpoch takes a year and returns the number of days from
+// the absolute epoch to the start of that year.
+// This is basically (year - zeroYear) * 365, but accounting for leap days.
+func daysSinceEpoch(year int) uint64 {
+	y := uint64(int64(year) - absoluteZeroYear)
+
+	// Add in days from 400-year cycles.
+	n := y / 400
+	y -= 400 * n
+	d := daysPer400Years * n
+
+	// Add in 100-year cycles.
+	n = y / 100
+	y -= 100 * n
+	d += daysPer100Years * n
+
+	// Add in 4-year cycles.
+	n = y / 4
+	y -= 4 * n
+	d += daysPer4Years * n
+
+	// Add in non-leap years.
+	n = y
+	d += 365 * n
+
+	return d
+}
+
 // Provided by package runtime.
 func now() (sec int64, nsec int32, mono int64)
 
@@ -1350,28 +1355,8 @@ func Date(year int, month Month, day, hour, min, sec, nsec int, loc *Location) T
 	hour, min = norm(hour, min, 60)
 	day, hour = norm(day, hour, 24)
 
-	y := uint64(int64(year) - absoluteZeroYear)
-
 	// Compute days since the absolute epoch.
-
-	// Add in days from 400-year cycles.
-	n := y / 400
-	y -= 400 * n
-	d := daysPer400Years * n
-
-	// Add in 100-year cycles.
-	n = y / 100
-	y -= 100 * n
-	d += daysPer100Years * n
-
-	// Add in 4-year cycles.
-	n = y / 4
-	y -= 4 * n
-	d += daysPer4Years * n
-
-	// Add in non-leap years.
-	n = y
-	d += 365 * n
+	d := daysSinceEpoch(year)
 
 	// Add in days before this month.
 	d += uint64(daysBefore[month-1])

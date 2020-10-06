@@ -24,7 +24,7 @@ var (
 	GOROOT   = envOr("GOROOT", defaultGOROOT)
 	GOARCH   = envOr("GOARCH", defaultGOARCH)
 	GOOS     = envOr("GOOS", defaultGOOS)
-	GO386    = envOr("GO386", defaultGO386)
+	GOAMD64  = goamd64()
 	GOARM    = goarm()
 	GOMIPS   = gomips()
 	GOMIPS64 = gomips64()
@@ -36,8 +36,14 @@ var (
 
 const (
 	ElfRelocOffset   = 256
-	MachoRelocOffset = 2048 // reserve enough space for ELF relocations
+	MachoRelocOffset = 2048           // reserve enough space for ELF relocations
+	Go115AMD64       = "alignedjumps" // Should be "alignedjumps" or "normaljumps"; this replaces environment variable introduced in CL 219357.
 )
+
+// TODO(1.16): assuming no issues in 1.15 release, remove this and related constant.
+func goamd64() string {
+	return Go115AMD64
+}
 
 func goarm() int {
 	switch v := envOr("GOARM", defaultGOARM); v {
@@ -124,11 +130,23 @@ func init() {
 			addexp(f)
 		}
 	}
+
+	// regabi is only supported on amd64.
+	if GOARCH != "amd64" {
+		Regabi_enabled = 0
+	}
+
+	if v := os.Getenv("GO386"); v != "" && v != "sse2" {
+		msg := fmt.Sprintf("unsupported setting GO386=%s", v)
+		if v == "387" {
+			msg += ". 387 support was dropped in Go 1.16. Consider using gccgo instead."
+		}
+		log.Fatal(msg)
+	}
 }
 
-func Framepointer_enabled(goos, goarch string) bool {
-	return framepointer_enabled != 0 && (goarch == "amd64" || goarch == "arm64" && goos == "linux")
-}
+// Note: must agree with runtime.framepointer_enabled.
+var Framepointer_enabled = GOARCH == "amd64" || GOARCH == "arm64" && (GOOS == "linux" || GOOS == "darwin" || GOOS == "ios")
 
 func addexp(s string) {
 	// Could do general integer parsing here, but the runtime copy doesn't yet.
@@ -152,9 +170,10 @@ func addexp(s string) {
 }
 
 var (
-	framepointer_enabled     int = 1
-	Fieldtrack_enabled       int
-	Preemptibleloops_enabled int
+	Fieldtrack_enabled        int
+	Preemptibleloops_enabled  int
+	Staticlockranking_enabled int
+	Regabi_enabled            int
 )
 
 // Toolchain experiments.
@@ -166,8 +185,9 @@ var exper = []struct {
 	val  *int
 }{
 	{"fieldtrack", &Fieldtrack_enabled},
-	{"framepointer", &framepointer_enabled},
 	{"preemptibleloops", &Preemptibleloops_enabled},
+	{"staticlockranking", &Staticlockranking_enabled},
+	{"regabi", &Regabi_enabled},
 }
 
 var defaultExpstring = Expstring()

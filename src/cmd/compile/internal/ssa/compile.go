@@ -47,6 +47,9 @@ func Compile(f *Func) {
 			stack := make([]byte, 16384)
 			n := runtime.Stack(stack, false)
 			stack = stack[:n]
+			if f.HTMLWriter != nil {
+				f.HTMLWriter.flushPhases()
+			}
 			f.Fatalf("panic during %s while compiling %s:\n\n%v\n\n%s\n", phaseName, f.Name, err, stack)
 		}
 	}()
@@ -55,7 +58,7 @@ func Compile(f *Func) {
 	if f.Log() {
 		printFunc(f)
 	}
-	f.HTMLWriter.WriteFunc("start", "start", f)
+	f.HTMLWriter.WritePhase("start", "start")
 	if BuildDump != "" && BuildDump == f.Name {
 		f.dumpFile("build")
 	}
@@ -111,7 +114,7 @@ func Compile(f *Func) {
 				f.Logf("  pass %s end %s\n", p.name, stats)
 				printFunc(f)
 			}
-			f.HTMLWriter.WriteFunc(phaseName, fmt.Sprintf("%s <span class=\"stats\">%s</span>", phaseName, stats), f)
+			f.HTMLWriter.WritePhase(phaseName, fmt.Sprintf("%s <span class=\"stats\">%s</span>", phaseName, stats))
 		}
 		if p.time || p.mem {
 			// Surround timing information w/ enough context to allow comparisons.
@@ -136,6 +139,11 @@ func Compile(f *Func) {
 		}
 	}
 
+	if f.HTMLWriter != nil {
+		// Ensure we write any pending phases to the html
+		f.HTMLWriter.flushPhases()
+	}
+
 	if f.ruleMatches != nil {
 		var keys []string
 		for key := range f.ruleMatches {
@@ -155,15 +163,12 @@ func Compile(f *Func) {
 	phaseName = ""
 }
 
-// TODO: should be a config field
-var dumpFileSeq int
-
 // dumpFile creates a file from the phase name and function name
 // Dumping is done to files to avoid buffering huge strings before
 // output.
 func (f *Func) dumpFile(phaseName string) {
-	dumpFileSeq++
-	fname := fmt.Sprintf("%s_%02d__%s.dump", f.Name, dumpFileSeq, phaseName)
+	f.dumpFileSeq++
+	fname := fmt.Sprintf("%s_%02d__%s.dump", f.Name, int(f.dumpFileSeq), phaseName)
 	fname = strings.Replace(fname, " ", "_", -1)
 	fname = strings.Replace(fname, "/", "_", -1)
 	fname = strings.Replace(fname, ":", "_", -1)
@@ -197,6 +202,13 @@ func (p *pass) addDump(s string) {
 		p.dump = make(map[string]bool)
 	}
 	p.dump[s] = true
+}
+
+func (p *pass) String() string {
+	if p == nil {
+		return "nil pass"
+	}
+	return p.name
 }
 
 // Run consistency checker between each phase
@@ -429,6 +441,7 @@ var passes = [...]pass{
 	{name: "nilcheckelim", fn: nilcheckelim},
 	{name: "prove", fn: prove},
 	{name: "early fuse", fn: fuseEarly},
+	{name: "expand calls", fn: expandCalls, required: true},
 	{name: "decompose builtin", fn: decomposeBuiltIn, required: true},
 	{name: "softfloat", fn: softfloat, required: true},
 	{name: "late opt", fn: opt, required: true}, // TODO: split required rules and optimizing rules
@@ -442,9 +455,11 @@ var passes = [...]pass{
 	{name: "insert resched checks", fn: insertLoopReschedChecks,
 		disabled: objabi.Preemptibleloops_enabled == 0}, // insert resched checks in loops.
 	{name: "lower", fn: lower, required: true},
+	{name: "addressing modes", fn: addressingModes, required: false},
 	{name: "lowered deadcode for cse", fn: deadcode}, // deadcode immediately before CSE avoids CSE making dead values live again
 	{name: "lowered cse", fn: cse},
 	{name: "elim unread autos", fn: elimUnreadAutos},
+	{name: "tighten tuple selectors", fn: tightenTupleSelectors, required: true},
 	{name: "lowered deadcode", fn: deadcode, required: true},
 	{name: "checkLower", fn: checkLower, required: true},
 	{name: "late phielim", fn: phielim},
@@ -503,6 +518,8 @@ var passOrder = [...]constraint{
 	{"decompose builtin", "late opt"},
 	// decompose builtin is the last pass that may introduce new float ops, so run softfloat after it
 	{"decompose builtin", "softfloat"},
+	// tuple selectors must be tightened to generators and de-duplicated before scheduling
+	{"tighten tuple selectors", "schedule"},
 	// remove critical edges before phi tighten, so that phi args get better placement
 	{"critical", "phi tighten"},
 	// don't layout blocks until critical edges have been removed

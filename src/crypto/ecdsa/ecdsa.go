@@ -62,6 +62,27 @@ type PublicKey struct {
 	X, Y *big.Int
 }
 
+// Any methods implemented on PublicKey might need to also be implemented on
+// PrivateKey, as the latter embeds the former and will expose its methods.
+
+// Equal reports whether pub and x have the same value.
+//
+// Two keys are only considered to have the same value if they have the same Curve value.
+// Note that for example elliptic.P256() and elliptic.P256().Params() are different
+// values, as the latter is a generic not constant time implementation.
+func (pub *PublicKey) Equal(x crypto.PublicKey) bool {
+	xx, ok := x.(*PublicKey)
+	if !ok {
+		return false
+	}
+	return pub.X.Cmp(xx.X) == 0 && pub.Y.Cmp(xx.Y) == 0 &&
+		// Standard library Curve implementations are singletons, so this check
+		// will work for those. Other Curves might be equivalent even if not
+		// singletons, but there is no definitive way to check for that, and
+		// better to err on the side of safety.
+		pub.Curve == xx.Curve
+}
+
 // PrivateKey represents an ECDSA private key.
 type PrivateKey struct {
 	PublicKey
@@ -71,6 +92,17 @@ type PrivateKey struct {
 // Public returns the public key corresponding to priv.
 func (priv *PrivateKey) Public() crypto.PublicKey {
 	return &priv.PublicKey
+}
+
+// Equal reports whether priv and x have the same value.
+//
+// See PublicKey.Equal for details on how Curve is compared.
+func (priv *PrivateKey) Equal(x crypto.PrivateKey) bool {
+	xx, ok := x.(*PrivateKey)
+	if !ok {
+		return false
+	}
+	return priv.PublicKey.Equal(&xx.PublicKey) && priv.D.Cmp(xx.D) == 0
 }
 
 // Sign signs digest with priv, reading randomness from rand. The opts argument
@@ -202,6 +234,10 @@ func Sign(rand io.Reader, priv *PrivateKey, hash []byte) (r, s *big.Int, err err
 
 	// See [NSA] 3.4.1
 	c := priv.PublicKey.Curve
+	return sign(priv, &csprng, c, hash)
+}
+
+func signGeneric(priv *PrivateKey, csprng *cipher.StreamReader, c elliptic.Curve, hash []byte) (r, s *big.Int, err error) {
 	N := c.Params().N
 	if N.Sign() == 0 {
 		return nil, nil, errZeroParam
@@ -209,7 +245,7 @@ func Sign(rand io.Reader, priv *PrivateKey, hash []byte) (r, s *big.Int, err err
 	var k, kInv *big.Int
 	for {
 		for {
-			k, err = randFieldElement(c, csprng)
+			k, err = randFieldElement(c, *csprng)
 			if err != nil {
 				r = nil
 				return
@@ -263,9 +299,13 @@ func Verify(pub *PublicKey, hash []byte, r, s *big.Int) bool {
 	if r.Cmp(N) >= 0 || s.Cmp(N) >= 0 {
 		return false
 	}
-	e := hashToInt(hash, c)
+	return verify(pub, c, hash, r, s)
+}
 
+func verifyGeneric(pub *PublicKey, c elliptic.Curve, hash []byte, r, s *big.Int) bool {
+	e := hashToInt(hash, c)
 	var w *big.Int
+	N := c.Params().N
 	if in, ok := c.(invertible); ok {
 		w = in.Inverse(s)
 	} else {
