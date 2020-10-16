@@ -39,7 +39,9 @@ func expandCalls(f *Func) {
 		hiOffset = 4
 	}
 
-	pairTypes := func(et types.EType) (tHi, tLo *types.Type) {
+	// intPairTypes returns the pair of 32-bit int types needed to encode a 64-bit integer type on a target
+	// that has no 64-bit integer registers.
+	intPairTypes := func(et types.EType) (tHi, tLo *types.Type) {
 		tHi = tUint32
 		if et == types.TINT64 {
 			tHi = tInt32
@@ -56,6 +58,29 @@ func expandCalls(f *Func) {
 			return false
 		}
 		return t.IsStruct() || t.IsArray() || regSize == 4 && t.Size() > 4 && t.IsInteger()
+	}
+
+	// removeTrivialWrapperTypes unwraps layers of
+	// struct { singleField SomeType } and [1]SomeType
+	// until a non-wrapper type is reached.  This is useful
+	// for working with assignments to/from interface data
+	// fields (either second operand to OpIMake or OpIData)
+	// where the wrapping or type conversion can be elided
+	// because of type conversions/assertions in source code
+	// that do not appear in SSA.
+	removeTrivialWrapperTypes := func(t *types.Type) *types.Type {
+		for {
+			if t.IsStruct() && t.NumFields() == 1 {
+				t = t.Field(0).Type
+				continue
+			}
+			if t.IsArray() && t.NumElem() == 1 {
+				t = t.Elem()
+				continue
+			}
+			break
+		}
+		return t
 	}
 
 	// Calls that need lowering have some number of inputs, including a memory input,
@@ -84,7 +109,7 @@ func expandCalls(f *Func) {
 				// rewrite v as a Copy of call -- the replacement call will produce a mem.
 				leaf.copyOf(call)
 			} else {
-				leafType := leaf.Type
+				leafType := removeTrivialWrapperTypes(leaf.Type)
 				pt := types.NewPtr(leafType)
 				if canSSAType(leafType) {
 					off := f.ConstOffPtrSP(pt, offset+aux.OffsetOfResult(which), sp)
@@ -92,6 +117,7 @@ func expandCalls(f *Func) {
 					if leaf.Block == call.Block {
 						leaf.reset(OpLoad)
 						leaf.SetArgs2(off, call)
+						leaf.Type = leafType
 					} else {
 						w := call.Block.NewValue2(leaf.Pos, OpLoad, leafType, off, call)
 						leaf.copyOf(w)
@@ -123,8 +149,8 @@ func expandCalls(f *Func) {
 		}
 	}
 
-	// storeArg converts stores of SSA-able aggregates into a series of stores of smaller types into
-	// individual parameter slots.
+	// storeArg converts stores of SSA-able aggregate arguments (passed to a call) into a series of stores of
+	// smaller types into individual parameter slots.
 	// TODO when registers really arrive, must also decompose anything split across two registers or registers and memory.
 	var storeArg func(pos src.XPos, b *Block, a *Value, t *types.Type, offset int64, mem *Value) *Value
 	storeArg = func(pos src.XPos, b *Block, a *Value, t *types.Type, offset int64, mem *Value) *Value {
@@ -141,7 +167,7 @@ func expandCalls(f *Func) {
 			return storeArg(pos, b, a.Args[0], t.Elem(), offset, mem)
 
 		case OpInt64Make:
-			tHi, tLo := pairTypes(t.Etype)
+			tHi, tLo := intPairTypes(t.Etype)
 			mem = storeArg(pos, b, a.Args[0], tHi, offset+hiOffset, mem)
 			return storeArg(pos, b, a.Args[1], tLo, offset+lowOffset, mem)
 		}
@@ -183,7 +209,7 @@ func expandCalls(f *Func) {
 			if t.Width == regSize {
 				break
 			}
-			tHi, tLo := pairTypes(t.Etype)
+			tHi, tLo := intPairTypes(t.Etype)
 			sel := src.Block.NewValue1(pos, OpInt64Hi, tHi, src)
 			mem = splitStore(dst, sel, mem, v, tHi, offset+hiOffset, firstStorePos)
 			firstStorePos = firstStorePos.WithNotStmt()
@@ -192,6 +218,13 @@ func expandCalls(f *Func) {
 
 		case types.TARRAY:
 			elt := t.Elem()
+			if src.Op == OpIData && t.NumElem() == 1 && t.Width == regSize && elt.Width == regSize {
+				t = removeTrivialWrapperTypes(t)
+				if t.Etype == types.TSTRUCT || t.Etype == types.TARRAY {
+					f.Fatalf("Did not expect to find IDATA-immediate with non-trivial struct/array in it")
+				}
+				break // handle the leaf type.
+			}
 			for i := int64(0); i < t.NumElem(); i++ {
 				sel := src.Block.NewValue1I(pos, OpArraySelect, elt, i, src)
 				mem = splitStore(dst, sel, mem, v, elt, offset+i*elt.Width, firstStorePos)
@@ -199,7 +232,7 @@ func expandCalls(f *Func) {
 			}
 			return mem
 		case types.TSTRUCT:
-			if src.Op == OpIData && t.NumFields() == 1 && t.Field(0).Type.Width == t.Width && t.Width == regSize   {
+			if src.Op == OpIData && t.NumFields() == 1 && t.Field(0).Type.Width == t.Width && t.Width == regSize {
 				// This peculiar test deals with accesses to immediate interface data.
 				// It works okay because everything is the same size.
 				// Example code that triggers this can be found in go/constant/value.go, function ToComplex
@@ -207,11 +240,9 @@ func expandCalls(f *Func) {
 				// v121 (+882) = StaticLECall <floatVal,mem> {AuxCall{"".itof([intVal,0])[floatVal,8]}} [16] v119 v1
 				// This corresponds to the generic rewrite rule "(StructSelect [0] (IData x)) => (IData x)"
 				// Guard against "struct{struct{*foo}}"
-				for t.Etype == types.TSTRUCT && t.NumFields() == 1 {
-					t = t.Field(0).Type
-				}
+				t = removeTrivialWrapperTypes(t)
 				if t.Etype == types.TSTRUCT || t.Etype == types.TARRAY {
-					f.Fatalf("Did not expect to find IDATA-immediate with non-trivial struct in it")
+					f.Fatalf("Did not expect to find IDATA-immediate with non-trivial struct/array in it")
 				}
 				break // handle the leaf type.
 			}
@@ -232,6 +263,9 @@ func expandCalls(f *Func) {
 		return x
 	}
 
+	// rewriteArgs removes all the Args from a call and converts the call args into appropriate
+	// stores (or later, register movement).  Extra args for interface and closure calls are ignored,
+	// but removed.
 	rewriteArgs := func(v *Value, firstArg int) *Value {
 		// Thread the stores on the memory arg
 		aux := v.Aux.(*AuxCall)
@@ -254,7 +288,7 @@ func expandCalls(f *Func) {
 				// TODO this will be more complicated with registers in the picture.
 				src := a.Args[0]
 				dst := f.ConstOffPtrSP(src.Type, aux.OffsetOfArg(auxI), sp)
-				if a.Uses == 1 {
+				if a.Uses == 1 && a.Block == v.Block {
 					a.reset(OpMove)
 					a.Pos = pos
 					a.Type = types.TypeMem
@@ -263,7 +297,7 @@ func expandCalls(f *Func) {
 					a.SetArgs3(dst, src, mem)
 					mem = a
 				} else {
-					mem = a.Block.NewValue3A(pos, OpMove, types.TypeMem, aux.TypeOfArg(auxI), dst, src, mem)
+					mem = v.Block.NewValue3A(pos, OpMove, types.TypeMem, aux.TypeOfArg(auxI), dst, src, mem)
 					mem.AuxInt = aux.SizeOfArg(auxI)
 				}
 			} else {

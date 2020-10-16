@@ -30,6 +30,7 @@ var (
 	gohostos         string
 	goos             string
 	goarm            string
+	go386            string
 	gomips           string
 	gomips64         string
 	goppc64          string
@@ -141,6 +142,12 @@ func xinit() {
 	}
 	goarm = b
 
+	b = os.Getenv("GO386")
+	if b == "" {
+		b = "sse2"
+	}
+	go386 = b
+
 	b = os.Getenv("GOMIPS")
 	if b == "" {
 		b = "hardfloat"
@@ -212,6 +219,7 @@ func xinit() {
 	defaultldso = os.Getenv("GO_LDSO")
 
 	// For tools being invoked but also for os.ExpandEnv.
+	os.Setenv("GO386", go386)
 	os.Setenv("GOARCH", goarch)
 	os.Setenv("GOARM", goarm)
 	os.Setenv("GOHOSTARCH", gohostarch)
@@ -1153,6 +1161,9 @@ func cmdenv() {
 	if goarch == "arm" {
 		xprintf(format, "GOARM", goarm)
 	}
+	if goarch == "386" {
+		xprintf(format, "GO386", go386)
+	}
 	if goarch == "mips" || goarch == "mipsle" {
 		xprintf(format, "GOMIPS", gomips)
 	}
@@ -1451,8 +1462,8 @@ func wrapperPathFor(goos, goarch string) string {
 		if gohostos != "android" {
 			return pathf("%s/misc/android/go_android_exec.go", goroot)
 		}
-	case (goos == "darwin" || goos == "ios") && goarch == "arm64":
-		if gohostos != "darwin" || gohostarch != "arm64" {
+	case goos == "ios":
+		if gohostos != "ios" {
 			return pathf("%s/misc/ios/go_ios_exec.go", goroot)
 		}
 	}

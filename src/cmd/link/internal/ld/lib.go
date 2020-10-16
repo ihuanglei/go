@@ -1254,7 +1254,9 @@ func (ctxt *Link) hostlink() {
 			// -headerpad is incompatible with -fembed-bitcode.
 			argv = append(argv, "-Wl,-headerpad,1144")
 		}
-		if ctxt.DynlinkingGo() && !ctxt.Arch.InFamily(sys.ARM, sys.ARM64) {
+		if ctxt.DynlinkingGo() && objabi.GOOS != "ios" {
+			// -flat_namespace is deprecated on iOS.
+			// It is useful for supporting plugins. We don't support plugins on iOS.
 			argv = append(argv, "-Wl,-flat_namespace")
 		}
 		if !combineDwarf {
@@ -1327,9 +1329,6 @@ func (ctxt *Link) hostlink() {
 	case BuildModeCShared:
 		if ctxt.HeadType == objabi.Hdarwin {
 			argv = append(argv, "-dynamiclib")
-			if ctxt.Arch.Family != sys.AMD64 {
-				argv = append(argv, "-Wl,-read_only_relocs,suppress")
-			}
 		} else {
 			// ELF.
 			argv = append(argv, "-Wl,-Bsymbolic")
@@ -2527,6 +2526,12 @@ func AddGotSym(target *Target, ldr *loader.Loader, syms *ArchSyms, s loader.Sym,
 	} else if target.IsDarwin() {
 		leg := ldr.MakeSymbolUpdater(syms.LinkEditGOT)
 		leg.AddUint32(target.Arch, uint32(ldr.SymDynid(s)))
+		if target.IsPIE() && target.IsInternal() {
+			// Mach-O relocations are a royal pain to lay out.
+			// They use a compact stateful bytecode representation.
+			// Here we record what are needed and encode them later.
+			MachoAddBind(int64(ldr.SymGot(s)), s)
+		}
 	} else {
 		ldr.Errorf(s, "addgotsym: unsupported binary format")
 	}
